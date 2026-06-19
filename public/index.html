@@ -60,6 +60,7 @@ label {
 
 input[type="text"],
 input[type="url"],
+select,
 textarea {
   width: 100%;
   padding: 12px 14px;
@@ -73,7 +74,8 @@ textarea {
   transition: border-color 0.15s;
   line-height: 1.4;
 }
-input:focus, textarea:focus {
+select { padding-right: 36px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23666' d='M6 8L0 0h12z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; }
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: #1A5276;
   background: white;
@@ -119,7 +121,7 @@ textarea { resize: vertical; min-height: 110px; }
 .panel { display: none; }
 .panel.active { display: block; }
 
-/* ── Upload zone ── */
+/* Upload zone */
 .upload-zone {
   border: 2px dashed #ccc;
   border-radius: 10px;
@@ -141,7 +143,7 @@ textarea { resize: vertical; min-height: 110px; }
 .upload-label { font-size: 14px; color: #555; font-weight: 500; }
 .upload-sub   { font-size: 12px; color: #aaa; }
 
-/* ── Photos grid ── */
+/* Photos grid */
 .photos-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -163,10 +165,8 @@ textarea { resize: vertical; min-height: 110px; }
 }
 .thumb-remove {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
+  top: 4px; right: 4px;
+  width: 22px; height: 22px;
   border-radius: 50%;
   background: rgba(0,0,0,0.6);
   color: white;
@@ -179,11 +179,7 @@ textarea { resize: vertical; min-height: 110px; }
   justify-content: center;
   padding: 0;
 }
-.photos-count {
-  font-size: 12px;
-  color: #888;
-  margin-bottom: 6px;
-}
+.photos-count { font-size: 12px; color: #888; margin-bottom: 6px; }
 .btn-add-more {
   width: 100%;
   padding: 10px;
@@ -198,7 +194,18 @@ textarea { resize: vertical; min-height: 110px; }
   margin-top: 4px;
 }
 
-/* ── Sticky footer ── */
+/* Extracted text area */
+.extracted-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1E8449;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Sticky footer */
 .sticky-footer {
   position: fixed;
   bottom: 0; left: 0; right: 0;
@@ -210,7 +217,7 @@ textarea { resize: vertical; min-height: 110px; }
 }
 .sticky-footer-inner { max-width: 600px; margin: 0 auto; }
 
-/* ── Buttons ── */
+/* Buttons */
 .btn {
   display: block;
   width: 100%;
@@ -239,7 +246,7 @@ textarea { resize: vertical; min-height: 110px; }
 }
 .btn-ghost:active { background: #f0f4f8; }
 
-/* ── Status ── */
+/* Status */
 .status {
   padding: 12px 14px;
   border-radius: 8px;
@@ -252,57 +259,9 @@ textarea { resize: vertical; min-height: 110px; }
 .status.success { background: #d5f5e3; color: #1E8449; display: block; }
 .status.error   { background: #fadbd8; color: #c0392b; display: block; }
 
-/* ── AI Preview ── */
-.preview-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #1A5276;
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 2px solid #d5f5e3;
-}
-.ai-rows { display: flex; flex-direction: column; }
-.ai-row {
-  display: flex;
-  flex-direction: column;
-  padding: 10px 0;
-  border-bottom: 1px solid #f0f0f0;
-  gap: 3px;
-}
-.ai-row:last-child { border-bottom: none; }
-.ai-key { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
-.ai-val { font-size: 14px; color: #1a1a1a; line-height: 1.5; }
-
-.badge {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-}
-.badge-high      { background: #fadbd8; color: #922b21; }
-.badge-medium    { background: #fdebd0; color: #7d6608; }
-.badge-low       { background: #d5f5e3; color: #1e8449; }
-.badge-yes       { background: #fdebd0; color: #7d6608; }
-.badge-no        { background: #d5f5e3; color: #1e8449; }
-.badge-conf-high { background: #d5f5e3; color: #1e8449; }
-.badge-conf-med  { background: #fdebd0; color: #7d6608; }
-.badge-conf-low  { background: #fadbd8; color: #922b21; }
-
-.hook-box {
-  background: #eaf3fb;
-  border-left: 3px solid #1A5276;
-  padding: 10px 12px;
-  border-radius: 0 6px 6px 0;
-  font-style: italic;
-  color: #1A5276;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
 hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 
-/* ── Password gate ── */
+/* Password gate */
 #password-gate {
   display: flex;
   flex-direction: column;
@@ -324,11 +283,6 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 }
 .gate-input:focus { outline: none; border-color: #1A5276; background: white; }
 .gate-error  { font-size: 13px; color: #c0392b; margin-top: 8px; min-height: 18px; }
-
-@media (min-width: 600px) {
-  .tab-btn .tab-label { font-size: 12px; }
-  .content { padding-top: 20px; }
-}
 </style>
 </head>
 <body>
@@ -346,25 +300,39 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
   </div>
 </div>
 
-<!-- Main app (hidden until password correct) -->
+<!-- Main app -->
 <div id="app" style="display:none;">
 
 <div class="header">
   <h1>🌵 Signal Intake</h1>
-  <p id="header-sub">Submit a signal — AI fills the structured fields automatically.</p>
+  <p>Submit raw signals — the dashboard handles AI analysis.</p>
 </div>
 
 <div class="content">
+  <div class="card">
 
-  <div class="card" id="input-card">
-
+    <!-- Name + Platform row -->
     <div class="field">
       <label>Your name</label>
       <input type="text" id="submitted-by" placeholder="e.g. Tho" maxlength="60" autocomplete="name">
     </div>
 
+    <div class="field">
+      <label>Platform <span class="hint">(optional)</span></label>
+      <select id="platform">
+        <option value="">— select —</option>
+        <option value="Instagram">Instagram</option>
+        <option value="TikTok">TikTok</option>
+        <option value="Facebook">Facebook</option>
+        <option value="YouTube">YouTube</option>
+        <option value="Pinterest">Pinterest</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+
     <hr>
 
+    <!-- Tab bar -->
     <div class="tab-bar">
       <button class="tab-btn active" id="tab-photo" onclick="switchTab('photo', this)">
         <span class="tab-icon">📷</span>
@@ -380,28 +348,30 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
       </button>
     </div>
 
-    <!-- PHOTO panel -->
+    <!-- SCREENSHOT panel -->
     <div id="panel-photo" class="panel active">
       <div class="field">
         <label>Upload screenshots <span class="hint">(up to 10 — post + comments)</span></label>
-
-        <!-- Empty state: upload zone -->
         <div class="upload-zone" id="upload-zone" onclick="triggerUpload()">
           <div class="upload-icon">📸</div>
           <div class="upload-label">Tap to choose or take a photo</div>
           <div class="upload-sub">JPG or PNG · max 5 MB each</div>
           <input type="file" id="photo-file" accept="image/*" multiple onchange="onFilesChosen(event)">
         </div>
-
-        <!-- Filled state: thumbnails grid -->
         <div id="photos-grid"  class="photos-grid"  style="display:none"></div>
         <div id="photos-count" class="photos-count" style="display:none"></div>
         <button id="add-more-btn" class="btn-add-more" style="display:none" onclick="triggerUpload()">+ Add more photos</button>
       </div>
 
+      <!-- Extracted text — shown after extraction, hidden initially -->
+      <div class="field" id="extracted-field" style="display:none">
+        <div class="extracted-label">✅ Text extracted — edit if needed</div>
+        <textarea id="extracted-text" rows="7" placeholder="Extracted text will appear here…"></textarea>
+      </div>
+
       <div class="field">
         <label>Extra context <span class="hint">(optional)</span></label>
-        <textarea id="photo-notes" rows="3" placeholder="e.g. From Houseplants for Beginners FB group. Post got 23 comments in 2 days."></textarea>
+        <textarea id="photo-notes" rows="2" placeholder="e.g. From Houseplants for Beginners FB group. 23 comments in 2 days."></textarea>
       </div>
     </div>
 
@@ -409,7 +379,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div id="panel-text" class="panel">
       <div class="field">
         <label>What did you find?</label>
-        <textarea id="text-input" rows="6" placeholder="Paste a caption, comment thread, or describe what you observed.&#10;&#10;e.g. Several posts this week in Houseplants for Beginners asking why string of pearls keeps dying — wrong soil, overwatering, not enough sun."></textarea>
+        <textarea id="text-input" rows="7" placeholder="Paste a caption, comment thread, or describe what you observed.&#10;&#10;e.g. Several posts this week in Houseplants for Beginners asking why string of pearls keeps dying."></textarea>
       </div>
       <div class="field">
         <label>Source URL <span class="hint">(optional)</span></label>
@@ -417,39 +387,32 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
       </div>
     </div>
 
-    <!-- URL panel -->
+    <!-- LINK panel -->
     <div id="panel-url" class="panel">
       <div class="field">
         <label>Post or video URL</label>
         <input type="url" id="url-input" placeholder="https://www.tiktok.com/@...">
       </div>
       <div class="field">
-        <label>Your notes <span class="hint">(optional)</span></label>
-        <textarea id="url-notes" rows="4" placeholder="e.g. 18k views, comments asking why the plant stretches. Creator doesn't explain it."></textarea>
+        <label>Your notes <span class="hint">(describe what you saw)</span></label>
+        <textarea id="url-notes" rows="5" placeholder="e.g. 18k views, comments asking why the plant stretches. Creator doesn't explain it. 3 similar posts this week."></textarea>
       </div>
     </div>
 
-    <div class="status" id="analyze-status"></div>
+    <div class="status" id="main-status"></div>
 
-  </div><!-- /input-card -->
-
-  <!-- AI preview card -->
-  <div class="card" id="preview-card" style="display:none;">
-    <div class="preview-title">🤖 AI Analysis — review before saving</div>
-    <div class="ai-rows" id="ai-fields"></div>
-    <div class="status" id="save-status"></div>
   </div>
-
 </div><!-- /content -->
 
 <div class="sticky-footer">
   <div class="sticky-footer-inner">
-    <div id="footer-analyze">
-      <button class="btn btn-green" id="analyze-btn" onclick="handleAnalyze()">✨ Analyze with AI</button>
+    <!-- Screenshot tab: Extract step first -->
+    <div id="footer-extract" style="display:none;">
+      <button class="btn btn-green" id="extract-btn" onclick="handleExtract()">🔍 Extract text from photos</button>
     </div>
-    <div id="footer-save" style="display:none;">
-      <button class="btn btn-blue" id="save-btn" onclick="handleSave()">✅ Save to Intake Sheet</button>
-      <button class="btn btn-ghost" onclick="resetAll()">← Submit another signal</button>
+    <!-- Submit button — always present for text/link, shown after extraction for photos -->
+    <div id="footer-submit">
+      <button class="btn btn-blue" id="submit-btn" onclick="handleSubmit()">✅ Submit to sheet</button>
     </div>
   </div>
 </div>
@@ -457,43 +420,37 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </div><!-- /app -->
 
 <script>
-// ── password gate ─────────────────────────────────────────────
+// ── password gate ──────────────────────────────────────────────
 var AUTH_KEY    = 'sb_auth_ok';
-var AUTH_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days
+var AUTH_EXPIRY = 7 * 24 * 60 * 60 * 1000;
 
 function isAuthed() {
   var stored = localStorage.getItem(AUTH_KEY);
   if (!stored) return false;
-  var data = JSON.parse(stored);
-  return Date.now() < data.expires;
+  try {
+    var data = JSON.parse(stored);
+    return Date.now() < data.expires;
+  } catch(e) { return false; }
 }
-
-function showGate()  {
+function showGate() {
   document.getElementById('password-gate').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
   setTimeout(function() { document.getElementById('gate-input').focus(); }, 100);
 }
-
 function showApp() {
   document.getElementById('password-gate').style.display = 'none';
   document.getElementById('app').style.display = 'block';
 }
-
 async function checkPassword() {
   var pw  = document.getElementById('gate-input').value;
   var btn = document.getElementById('gate-btn');
   var err = document.getElementById('gate-error');
   if (!pw) return;
-
-  btn.disabled    = true;
-  btn.textContent = '…';
-  err.textContent = '';
-
+  btn.disabled = true; btn.textContent = '…'; err.textContent = '';
   try {
     var res  = await fetch('/.netlify/functions/auth', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ password: pw })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw })
     });
     var data = await res.json();
     if (data.success) {
@@ -503,99 +460,96 @@ async function checkPassword() {
       err.textContent = data.error || 'Incorrect password.';
       document.getElementById('gate-input').select();
     }
-  } catch (e) {
-    err.textContent = 'Connection error — try again.';
-  }
-
-  btn.disabled    = false;
-  btn.textContent = 'Unlock';
+  } catch(e) { err.textContent = 'Connection error — try again.'; }
+  btn.disabled = false; btn.textContent = 'Unlock';
 }
 
-// ── state ────────────────────────────────────────────────────
-var activeTab = 'photo';
-var images    = [];   // [{ base64, mimeType, name, dataUrl }]
-var payload   = null;
-var aiFields  = null;
+// ── state ──────────────────────────────────────────────────────
+var activeTab    = 'photo';
+var images       = [];
+var textExtracted = false;
 
-// ── init ─────────────────────────────────────────────────────
-window.onload = function () {
-  if (isAuthed()) {
-    showApp();
-  } else {
-    showGate();
-  }
+// ── init ───────────────────────────────────────────────────────
+window.onload = function() {
+  if (isAuthed()) { showApp(); } else { showGate(); }
   var saved = localStorage.getItem('sb_intake_name');
   if (saved) document.getElementById('submitted-by').value = saved;
+  updateFooter();
 };
 
-// ── tabs ─────────────────────────────────────────────────────
+// ── tabs ───────────────────────────────────────────────────────
 function switchTab(name, el) {
   document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
   document.querySelectorAll('.panel').forEach(function(p)   { p.classList.remove('active'); });
   el.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
   activeTab = name;
+  textExtracted = false;
+  updateFooter();
 }
 
-// ── multi-photo upload ────────────────────────────────────────
+function updateFooter() {
+  var extractDiv = document.getElementById('footer-extract');
+  var submitDiv  = document.getElementById('footer-submit');
+  if (activeTab === 'photo') {
+    // Show Extract button; Submit only after extraction
+    extractDiv.style.display = 'block';
+    submitDiv.style.display  = textExtracted ? 'block' : 'none';
+  } else {
+    extractDiv.style.display = 'none';
+    submitDiv.style.display  = 'block';
+  }
+}
+
+// ── multi-photo upload ─────────────────────────────────────────
 function triggerUpload() {
   document.getElementById('photo-file').click();
 }
-
 function onFilesChosen(e) {
-  var files     = Array.from(e.target.files);
+  var files = Array.from(e.target.files);
   var remaining = 10 - images.length;
   if (!files.length || remaining <= 0) return;
-
   var toProcess = files.slice(0, remaining);
-  if (files.length > remaining) {
-    alert('You can add ' + remaining + ' more photo(s). Only the first ' + remaining + ' will be used.');
-  }
-
   toProcess.forEach(function(file) {
-    if (file.size > 5 * 1024 * 1024) {
-      alert(file.name + ' is over 5 MB — skipped.');
-      return;
-    }
+    if (file.size > 5 * 1024 * 1024) { alert(file.name + ' is over 5 MB — skipped.'); return; }
     var reader = new FileReader();
     reader.onload = function(ev) {
-      var dataUrl = ev.target.result;
-      resizeIfNeeded(dataUrl, file.type || 'image/jpeg', function(b64, mime) {
-        images.push({ base64: b64, mimeType: mime, name: file.name, dataUrl: dataUrl });
+      resizeIfNeeded(ev.target.result, file.type || 'image/jpeg', function(b64, mime) {
+        images.push({ base64: b64, mimeType: mime, dataUrl: ev.target.result });
         renderPhotosGrid();
+        // Reset extraction state when new photos are added
+        textExtracted = false;
+        document.getElementById('extracted-field').style.display = 'none';
+        document.getElementById('extracted-text').value = '';
+        updateFooter();
       });
     };
     reader.readAsDataURL(file);
   });
-
-  e.target.value = ''; // allow re-selecting same files
+  e.target.value = '';
 }
-
 function removeImage(idx) {
   images.splice(idx, 1);
   renderPhotosGrid();
+  textExtracted = false;
+  document.getElementById('extracted-field').style.display = 'none';
+  document.getElementById('extracted-text').value = '';
+  updateFooter();
 }
-
 function renderPhotosGrid() {
-  var zone     = document.getElementById('upload-zone');
-  var grid     = document.getElementById('photos-grid');
-  var count    = document.getElementById('photos-count');
-  var addMore  = document.getElementById('add-more-btn');
-
-  if (images.length === 0) {
-    zone.style.display    = 'flex';
-    grid.style.display    = 'none';
-    count.style.display   = 'none';
-    addMore.style.display = 'none';
+  var zone    = document.getElementById('upload-zone');
+  var grid    = document.getElementById('photos-grid');
+  var count   = document.getElementById('photos-count');
+  var addMore = document.getElementById('add-more-btn');
+  if (!images.length) {
+    zone.style.display = 'flex'; grid.style.display = 'none';
+    count.style.display = 'none'; addMore.style.display = 'none';
     return;
   }
-
-  zone.style.display    = 'none';
-  grid.style.display    = 'grid';
-  count.style.display   = 'block';
-  count.textContent     = images.length + ' / 10 photos selected';
+  zone.style.display = 'none'; grid.style.display = 'grid';
+  count.style.display = 'block';
+  count.textContent = images.length + ' / 10 photos selected';
   addMore.style.display = images.length < 10 ? 'block' : 'none';
-
   grid.innerHTML = images.map(function(img, i) {
     return '<div class="thumb-wrap">'
       + '<img src="' + img.dataUrl + '" class="thumb-img" alt="photo ' + (i+1) + '">'
@@ -603,14 +557,12 @@ function renderPhotosGrid() {
       + '</div>';
   }).join('');
 }
-
-// ── resize ────────────────────────────────────────────────────
 function resizeIfNeeded(dataUrl, mimeType, cb) {
   var img = new Image();
   img.onload = function() {
     var MAX = 1200;
     if (img.width <= MAX && img.height <= MAX) { cb(dataUrl.split(',')[1], mimeType); return; }
-    var scale  = MAX / Math.max(img.width, img.height);
+    var scale = MAX / Math.max(img.width, img.height);
     var canvas = document.createElement('canvas');
     canvas.width  = Math.round(img.width  * scale);
     canvas.height = Math.round(img.height * scale);
@@ -621,187 +573,128 @@ function resizeIfNeeded(dataUrl, mimeType, cb) {
   img.src = dataUrl;
 }
 
-// ── status ────────────────────────────────────────────────────
-function showStatus(id, msg, type) {
-  var el = document.getElementById(id);
+// ── status helpers ─────────────────────────────────────────────
+function showStatus(msg, type) {
+  var el = document.getElementById('main-status');
   el.textContent = msg;
-  el.className   = 'status ' + type;
+  el.className = 'status ' + type;
 }
-function hideStatus(id) { document.getElementById(id).className = 'status'; }
+function hideStatus() {
+  document.getElementById('main-status').className = 'status';
+}
 
-// ── analyze ───────────────────────────────────────────────────
-async function handleAnalyze() {
+// ── EXTRACT TEXT from screenshots ──────────────────────────────
+async function handleExtract() {
+  if (!images.length) { alert('Please choose at least one screenshot first.'); return; }
+
+  var btn = document.getElementById('extract-btn');
+  btn.disabled = true; btn.textContent = '⏳ Extracting…';
+  showStatus('Reading text from your screenshot(s) — about 5 seconds…', 'loading');
+
+  try {
+    var res    = await fetch('/.netlify/functions/analyze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: images.map(function(i) { return { base64: i.base64, mimeType: i.mimeType }; }) })
+    });
+    var result = await res.json();
+    if (result.error) throw new Error(result.error);
+
+    // Show extracted text in editable textarea
+    document.getElementById('extracted-text').value = result.rawText || '';
+    document.getElementById('extracted-field').style.display = 'block';
+    document.getElementById('extracted-field').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    textExtracted = true;
+    updateFooter();
+    hideStatus();
+
+  } catch(err) {
+    showStatus('❌ ' + (err.message || 'Could not extract text'), 'error');
+  }
+
+  btn.disabled = false; btn.textContent = '🔍 Extract text from photos';
+}
+
+// ── SUBMIT to sheet ────────────────────────────────────────────
+async function handleSubmit() {
   var name = document.getElementById('submitted-by').value.trim();
   if (!name) { alert('Please enter your name first.'); document.getElementById('submitted-by').focus(); return; }
   localStorage.setItem('sb_intake_name', name);
 
-  payload = { submittedBy: name };
+  var rawInput = '', sourceUrl = '';
 
   if (activeTab === 'photo') {
-    if (!images.length) { alert('Please choose at least one screenshot.'); return; }
-    payload.images   = images.map(function(i) { return { base64: i.base64, mimeType: i.mimeType }; });
-    payload.rawInput = document.getElementById('photo-notes').value.trim();
-    payload.sourceUrl = '';
+    rawInput = document.getElementById('extracted-text').value.trim();
+    var notes = document.getElementById('photo-notes').value.trim();
+    if (notes) rawInput = rawInput ? rawInput + '\n\n[Notes: ' + notes + ']' : notes;
+    if (!rawInput) { alert('Please extract text from your screenshots first.'); return; }
 
   } else if (activeTab === 'text') {
-    var raw = document.getElementById('text-input').value.trim();
-    if (!raw) { alert('Please paste some text first.'); return; }
-    payload.rawInput  = raw;
-    payload.sourceUrl = document.getElementById('text-url').value.trim();
+    rawInput  = document.getElementById('text-input').value.trim();
+    sourceUrl = document.getElementById('text-url').value.trim();
+    if (!rawInput) { alert('Please paste some text first.'); return; }
 
   } else {
-    var url = document.getElementById('url-input').value.trim();
-    if (!url) { alert('Please enter a URL.'); return; }
-    payload.sourceUrl = url;
-    payload.rawInput  = document.getElementById('url-notes').value.trim();
+    sourceUrl = document.getElementById('url-input').value.trim();
+    rawInput  = document.getElementById('url-notes').value.trim();
+    if (!sourceUrl) { alert('Please enter a URL first.'); return; }
+    // If no notes, use a short placeholder so raw_input isn't blank
+    if (!rawInput) rawInput = 'Signal from: ' + sourceUrl;
   }
 
-  var btn = document.getElementById('analyze-btn');
-  btn.disabled    = true;
-  btn.textContent = '⏳ Analyzing…';
-  showStatus('analyze-status', 'Claude is reading your signal — about 10 seconds…', 'loading');
+  var platform   = document.getElementById('platform').value;
 
-  try {
-    var res    = await fetch('/.netlify/functions/analyze', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload)
-    });
-    var result = await res.json();
-    onAnalyzeOk(result);
-  } catch (err) {
-    onAnalyzeFail(err);
-  }
-}
-
-function onAnalyzeOk(result) {
-  var btn = document.getElementById('analyze-btn');
-  btn.disabled    = false;
-  btn.textContent = '✨ Analyze with AI';
-
-  if (result.error) { showStatus('analyze-status', '❌ ' + result.error, 'error'); return; }
-  hideStatus('analyze-status');
-
-  aiFields = result.fields;
-  renderPreview(result.fields);
-  document.getElementById('preview-card').style.display   = 'block';
-  document.getElementById('footer-analyze').style.display = 'none';
-  document.getElementById('footer-save').style.display    = 'block';
-  document.getElementById('preview-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function onAnalyzeFail(err) {
-  var btn = document.getElementById('analyze-btn');
-  btn.disabled    = false;
-  btn.textContent = '✨ Analyze with AI';
-  showStatus('analyze-status', '❌ ' + (err.message || err), 'error');
-}
-
-// ── preview ───────────────────────────────────────────────────
-function mkBadge(val, type) {
-  var v   = (val || '').toLowerCase();
-  var cls = 'badge';
-  if (type === 'priority')   cls += v === 'high' ? ' badge-high' : v === 'medium' ? ' badge-medium' : ' badge-low';
-  if (type === 'review')     cls += v === 'yes'  ? ' badge-yes'  : ' badge-no';
-  if (type === 'confidence') cls += v === 'high' ? ' badge-conf-high' : v === 'medium' ? ' badge-conf-med' : ' badge-conf-low';
-  return '<span class="' + cls + '">' + (val || '—') + '</span>';
-}
-function mkRow(key, val) {
-  return '<div class="ai-row"><div class="ai-key">' + key + '</div><div class="ai-val">' + (val || '—') + '</div></div>';
-}
-
-function renderPreview(f) {
-  document.getElementById('ai-fields').innerHTML =
-    mkRow('Topic',             f.topic) +
-    mkRow('Plant / product',   f.plant_product) +
-    mkRow('Platform',          f.platform) +
-    mkRow('Signal type',       f.signal_type) +
-    mkRow('Source',            f.source_name) +
-    mkRow('Summary',           f.caption_summary) +
-    mkRow('Repeated theme',    f.repeated_theme) +
-    mkRow('Audience language', f.audience_language) +
-    mkRow('Why it matters',    f.why_it_matters) +
-    mkRow('Catalog fit',       f.catalog_fit_guess) +
-    mkRow('Content pillar',    f.content_pillar) +
-    mkRow('Shelf life',        f.shelf_life) +
-    mkRow('Priority',          mkBadge(f.priority_guess, 'priority')) +
-    '<div class="ai-row"><div class="ai-key">Suggested hook</div><div class="ai-val"><div class="hook-box">' + (f.suggested_hook || '—') + '</div></div></div>' +
-    mkRow('Suggested format',  f.suggested_format) +
-    mkRow('AI confidence',     mkBadge(f.ai_confidence, 'confidence')) +
-    mkRow('Needs review?',     mkBadge(f.needs_human_review, 'review'));
-}
-
-// ── save ──────────────────────────────────────────────────────
-async function handleSave() {
-  var btn = document.getElementById('save-btn');
-  btn.disabled    = true;
-  btn.textContent = '⏳ Saving…';
-  hideStatus('save-status');
-
-  var savePayload = {
-    submittedBy: payload.submittedBy,
-    rawInput:    (payload.images && payload.images.length ? '[' + payload.images.length + ' screenshot(s)] ' : '') + (payload.rawInput || ''),
-    sourceUrl:   payload.sourceUrl || ''
-  };
+  var btn = document.getElementById('submit-btn');
+  btn.disabled = true; btn.textContent = '⏳ Saving…';
+  showStatus('Saving to the Intake sheet…', 'loading');
 
   try {
     var res    = await fetch('/.netlify/functions/save', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ payload: savePayload, fields: aiFields })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rawInput:   rawInput,
+        sourceUrl:  sourceUrl,
+        platform:   platform,
+        sourceName: name,
+      })
     });
     var result = await res.json();
-    onSaveOk(result);
-  } catch (err) {
-    onSaveFail(err);
+    if (!result.success) throw new Error(result.error || 'Unknown error');
+
+    showStatus('✅ Saved! The dashboard will pick it up for AI analysis.', 'success');
+    setTimeout(resetAll, 2500);
+
+  } catch(err) {
+    showStatus('❌ ' + (err.message || 'Could not save'), 'error');
+    btn.disabled = false; btn.textContent = '✅ Submit to sheet';
   }
 }
 
-function onSaveOk(result) {
-  var btn = document.getElementById('save-btn');
-  btn.disabled    = false;
-  btn.textContent = '✅ Save to Intake Sheet';
-  if (result.success) {
-    showStatus('save-status', '✅ Saved to the Intake sheet!', 'success');
-    setTimeout(resetAll, 3000);
-  } else {
-    showStatus('save-status', '❌ ' + (result.error || 'unknown error'), 'error');
-  }
-}
-
-function onSaveFail(err) {
-  var btn = document.getElementById('save-btn');
-  btn.disabled    = false;
-  btn.textContent = '✅ Save to Intake Sheet';
-  showStatus('save-status', '❌ ' + (err.message || err), 'error');
-}
-
-// ── reset ─────────────────────────────────────────────────────
+// ── reset ──────────────────────────────────────────────────────
 function resetAll() {
-  document.getElementById('text-input').value  = '';
-  document.getElementById('text-url').value    = '';
-  document.getElementById('url-input').value   = '';
-  document.getElementById('url-notes').value   = '';
-  document.getElementById('photo-notes').value = '';
-  document.getElementById('photo-file').value  = '';
+  document.getElementById('text-input').value   = '';
+  document.getElementById('text-url').value     = '';
+  document.getElementById('url-input').value    = '';
+  document.getElementById('url-notes').value    = '';
+  document.getElementById('photo-notes').value  = '';
+  document.getElementById('photo-file').value   = '';
+  document.getElementById('platform').value     = '';
+  document.getElementById('extracted-text').value = '';
+  document.getElementById('extracted-field').style.display = 'none';
 
-  images = [];
+  images = []; textExtracted = false;
   renderPhotosGrid();
+  hideStatus();
 
-  payload = null; aiFields = null;
+  document.getElementById('submit-btn').disabled    = false;
+  document.getElementById('submit-btn').textContent = '✅ Submit to sheet';
+  document.getElementById('extract-btn').disabled   = false;
 
-  document.getElementById('preview-card').style.display   = 'none';
-  document.getElementById('footer-analyze').style.display = 'block';
-  document.getElementById('footer-save').style.display    = 'none';
-  hideStatus('analyze-status');
-  hideStatus('save-status');
-
-  // back to photo tab
   document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
   document.querySelectorAll('.panel').forEach(function(p)   { p.classList.remove('active'); });
   document.getElementById('tab-photo').classList.add('active');
   document.getElementById('panel-photo').classList.add('active');
   activeTab = 'photo';
+  updateFooter();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
