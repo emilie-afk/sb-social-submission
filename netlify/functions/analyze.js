@@ -27,7 +27,12 @@ exports.handler = async (event) => {
     }
     userContent.push({
       type: 'text',
-      text: `Transcribe ALL visible text from ${payload.images.length > 1 ? 'these screenshots' : 'this screenshot'} exactly as shown — post captions, comments, usernames, engagement numbers, dates, hashtags, everything. Do not summarize, analyze, or omit anything. Output the raw text only, organized by image if there are multiple.`
+      text: `Look at ${payload.images.length > 1 ? 'these screenshots' : 'this screenshot'} and respond with JSON only — no markdown, no explanation.
+
+{
+  "rawText": "<transcribe ALL visible text exactly as shown — captions, comments, usernames, engagement numbers, dates, hashtags, everything>",
+  "creatorName": "<name or @handle of whoever made the original post — not commenters. null if unclear>"
+}`
     });
 
     const response = await client.messages.create({
@@ -36,10 +41,19 @@ exports.handler = async (event) => {
       messages:   [{ role: 'user', content: userContent }]
     });
 
+    let rawText = '', creatorName = null;
+    try {
+      const parsed = JSON.parse(response.content[0].text.trim());
+      rawText     = parsed.rawText     || '';
+      creatorName = parsed.creatorName || null;
+    } catch {
+      rawText = response.content[0].text.trim();
+    }
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ success: true, rawText: response.content[0].text.trim() })
+      body: JSON.stringify({ success: true, rawText, creatorName })
     };
 
   } catch (err) {

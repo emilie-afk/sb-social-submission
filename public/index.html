@@ -313,8 +313,13 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 
     <!-- Name + Platform row -->
     <div class="field">
+      <label>Your name <span class="hint">(who's submitting)</span></label>
+      <input type="text" id="submitted-by" placeholder="e.g. Emilie" maxlength="60" autocomplete="name">
+    </div>
+
+    <div class="field">
       <label>Creator / account name <span class="hint">(who posted it)</span></label>
-      <input type="text" id="submitted-by" placeholder="e.g. Julia Lowe, @succulentcity" maxlength="60" autocomplete="off">
+      <input type="text" id="creator-name" placeholder="e.g. Julia Lowe, @succulentcity" maxlength="60" autocomplete="off">
     </div>
 
     <div class="field">
@@ -472,7 +477,8 @@ var textExtracted = false;
 // ── init ───────────────────────────────────────────────────────
 window.onload = function() {
   if (isAuthed()) { showApp(); } else { showGate(); }
-  // Don't pre-fill creator name — it changes per submission
+  var saved = localStorage.getItem('sb_intake_name');
+  if (saved) document.getElementById('submitted-by').value = saved;
   updateFooter();
 };
 
@@ -606,6 +612,12 @@ async function handleExtract() {
     updateFooter();
     hideStatus();
 
+    // Auto-fill creator name if field is empty and AI found one
+    if (result.creatorName) {
+      var creatorField = document.getElementById('creator-name');
+      if (!creatorField.value.trim()) creatorField.value = result.creatorName;
+    }
+
   } catch(err) {
     showStatus('❌ ' + (err.message || 'Could not extract text'), 'error');
   }
@@ -616,6 +628,8 @@ async function handleExtract() {
 // ── SUBMIT to sheet ────────────────────────────────────────────
 async function handleSubmit() {
   var name = document.getElementById('submitted-by').value.trim();
+  localStorage.setItem('sb_intake_name', name);
+  var creatorName = document.getElementById('creator-name').value.trim();
 
   var rawInput = '', sourceUrl = '';
 
@@ -648,10 +662,11 @@ async function handleSubmit() {
     var res    = await fetch('/.netlify/functions/save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        rawInput:   rawInput,
-        sourceUrl:  sourceUrl,
-        platform:   platform,
-        sourceName: name,
+        rawInput:     rawInput,
+        sourceUrl:    sourceUrl,
+        platform:     platform,
+        sourceName:   creatorName,
+        submittedBy:  name,
       })
     });
     var result = await res.json();

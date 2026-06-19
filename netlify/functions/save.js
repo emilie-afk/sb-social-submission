@@ -2,7 +2,7 @@ const { google } = require('googleapis');
 
 // Column order matches intake-sheet-script.gs COL definitions:
 // 1: Raw input  2: Source URL  3: Platform  4: Source name  5: Status (auto)  6: Submitted at (auto)
-const HEADERS = ['Raw input', 'Source URL', 'Platform', 'Source name', 'Status', 'Submitted at'];
+const HEADERS = ['Raw input', 'Source URL', 'Platform', 'Source name', 'Status', 'Submitted at', 'Submitted by'];
 
 const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://sb-content-intelligence.netlify.app';
 
@@ -12,7 +12,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { rawInput, sourceUrl, platform, sourceName } = JSON.parse(event.body);
+    const { rawInput, sourceUrl, platform, sourceName, submittedBy } = JSON.parse(event.body);
 
     if (!rawInput || !rawInput.trim()) {
       return {
@@ -53,15 +53,16 @@ exports.handler = async (event) => {
     // so we submit to the dashboard directly below instead.
     const now = new Date().toISOString();
     const row = [
-      (rawInput  || '').trim(),
-      (sourceUrl || '').trim(),
-      (platform  || '').trim(),
-      (sourceName|| '').trim(),
-      '',   // Status — filled below after dashboard submit
-      now,  // Submitted at
+      (rawInput   || '').trim(),
+      (sourceUrl  || '').trim(),
+      (platform   || '').trim(),
+      (sourceName || '').trim(),
+      '',                          // Status — written back below
+      now,                         // Submitted at
+      (submittedBy|| '').trim(),   // Submitted by (internal, col G)
     ];
 
-    await sheets.spreadsheets.values.append({
+    const appendResp = await sheets.spreadsheets.values.append({
       spreadsheetId:   sheetId,
       range:           'Intake!A:A',
       valueInputOption:'USER_ENTERED',
@@ -69,9 +70,15 @@ exports.handler = async (event) => {
       resource:        { values: [row] }
     });
 
+    // Parse the row number from the updated range (e.g. "Intake!A5:F5" → 5)
+    const updatedRange = appendResp.data.updates?.updatedRange || '';
+    const rowMatch = updatedRange.match(/:([A-Z]+(\d+))$/);
+    const appendedRow = rowMatch ? parseInt(rowMatch[2], 10) : null;
+
     // ── 2. Submit directly to dashboard (bypasses onEdit limitation) ──────
     const submitToken = process.env.SUBMIT_TOKEN;
     let dashboardResult = { skipped: true };
+    let sheetStatus = '⚠️ No token';
 
     if (submitToken) {
       try {
@@ -96,9 +103,21 @@ exports.handler = async (event) => {
           }
         );
         dashboardResult = await resp.json();
+        sheetStatus = resp.ok ? '✅ Sent' : '❌ Error';
       } catch (dashErr) {
         console.warn('Dashboard submit failed (signal still saved to sheet):', dashErr.message);
+        sheetStatus = '❌ Error';
       }
+    }
+
+    // ── 3. Write status back to sheet ────────────────────────────────────
+    if (appendedRow) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId:   sheetId,
+        range:           `Intake!E${appendedRow}`,
+        valueInputOption:'RAW',
+        resource:        { values: [[sheetStatus]] }
+      });
     }
 
     return {
