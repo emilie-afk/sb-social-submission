@@ -313,8 +313,8 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 
     <!-- Name + Platform row -->
     <div class="field">
-      <label>Your name</label>
-      <input type="text" id="submitted-by" placeholder="e.g. Tho" maxlength="60" autocomplete="name">
+      <label>Creator / account name <span class="hint">(who posted it)</span></label>
+      <input type="text" id="submitted-by" placeholder="e.g. Julia Lowe, @succulentcity" maxlength="60" autocomplete="off">
     </div>
 
     <div class="field">
@@ -472,8 +472,7 @@ var textExtracted = false;
 // ── init ───────────────────────────────────────────────────────
 window.onload = function() {
   if (isAuthed()) { showApp(); } else { showGate(); }
-  var saved = localStorage.getItem('sb_intake_name');
-  if (saved) document.getElementById('submitted-by').value = saved;
+  // Don't pre-fill creator name — it changes per submission
   updateFooter();
 };
 
@@ -617,8 +616,6 @@ async function handleExtract() {
 // ── SUBMIT to sheet ────────────────────────────────────────────
 async function handleSubmit() {
   var name = document.getElementById('submitted-by').value.trim();
-  if (!name) { alert('Please enter your name first.'); document.getElementById('submitted-by').focus(); return; }
-  localStorage.setItem('sb_intake_name', name);
 
   var rawInput = '', sourceUrl = '';
 

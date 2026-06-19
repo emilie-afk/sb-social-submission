@@ -4,6 +4,8 @@ const { google } = require('googleapis');
 // 1: Raw input  2: Source URL  3: Platform  4: Source name  5: Status (auto)  6: Submitted at (auto)
 const HEADERS = ['Raw input', 'Source URL', 'Platform', 'Source name', 'Status', 'Submitted at'];
 
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://sb-content-intelligence.netlify.app';
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -46,14 +48,17 @@ exports.handler = async (event) => {
       });
     }
 
-    // Write the raw row — Status and Submitted at left blank (Apps Script fills them on edit)
+    // ── 1. Write raw row to sheet ─────────────────────────────────────────
+    // Note: Google Sheets API writes do NOT trigger Apps Script onEdit,
+    // so we submit to the dashboard directly below instead.
+    const now = new Date().toISOString();
     const row = [
       (rawInput  || '').trim(),
       (sourceUrl || '').trim(),
       (platform  || '').trim(),
       (sourceName|| '').trim(),
-      '', // Status — set by Apps Script onEdit trigger
-      '', // Submitted at — set by Apps Script onEdit trigger
+      '',   // Status — filled below after dashboard submit
+      now,  // Submitted at
     ];
 
     await sheets.spreadsheets.values.append({
@@ -64,10 +69,42 @@ exports.handler = async (event) => {
       resource:        { values: [row] }
     });
 
+    // ── 2. Submit directly to dashboard (bypasses onEdit limitation) ──────
+    const submitToken = process.env.SUBMIT_TOKEN;
+    let dashboardResult = { skipped: true };
+
+    if (submitToken) {
+      try {
+        const signal = [{
+          topic:        (rawInput || '').trim(),
+          source_url:   (sourceUrl || '').trim() || null,
+          platform:     (platform  || '').trim() || null,
+          creator_name: (sourceName|| '').trim() || null,
+          date_found:   now.slice(0, 10),
+          status:       'New',
+        }];
+
+        const resp = await fetch(
+          `${DASHBOARD_URL}/.netlify/functions/submit-signal`,
+          {
+            method:  'POST',
+            headers: {
+              'Content-Type':        'application/json',
+              'x-submission-token':  submitToken,
+            },
+            body: JSON.stringify(signal),
+          }
+        );
+        dashboardResult = await resp.json();
+      } catch (dashErr) {
+        console.warn('Dashboard submit failed (signal still saved to sheet):', dashErr.message);
+      }
+    }
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ success: true })
+      body: JSON.stringify({ success: true, dashboard: dashboardResult })
     };
 
   } catch (err) {
