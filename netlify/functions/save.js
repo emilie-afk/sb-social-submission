@@ -83,12 +83,13 @@ exports.handler = async (event) => {
     if (submitToken) {
       try {
         const signal = [{
-          topic:        (rawInput || '').trim(),
-          source_url:   (sourceUrl || '').trim() || null,
-          platform:     (platform  || '').trim() || null,
-          creator_name: (sourceName|| '').trim() || null,
-          date_found:   now.slice(0, 10),
-          status:       'New',
+          topic:                (rawInput || '').trim(),
+          source_url:           (sourceUrl || '').trim() || null,
+          platform:             (platform  || '').trim() || null,
+          creator_name:         (sourceName|| '').trim() || null,
+          date_found:           now.slice(0, 10),
+          status:               'New',
+          is_manual:            true,  // intake sheet = human-submitted
         }];
 
         const resp = await fetch(
