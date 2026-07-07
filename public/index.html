@@ -396,11 +396,26 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div id="panel-url" class="panel">
       <div class="field">
         <label>Post or video URL</label>
-        <input type="url" id="url-input" placeholder="https://www.tiktok.com/@...">
+        <input type="url" id="url-input" placeholder="https://www.tiktok.com/@..." oninput="onUrlInput()">
       </div>
+
+      <!-- Extract button — shown once a URL is typed -->
+      <div class="field" id="transcript-extract-row" style="display:none">
+        <button class="btn btn-ghost" id="transcript-btn" onclick="handleTranscriptExtract()" style="margin-top:0; font-size:14px; padding:12px;">
+          🎙️ Extract transcript / captions
+        </button>
+      </div>
+
+      <!-- Transcript result — shown after extraction -->
+      <div class="field" id="transcript-field" style="display:none">
+        <div class="extracted-label" id="transcript-label">✅ Transcript extracted — edit if needed</div>
+        <textarea id="transcript-text" rows="7" placeholder="Transcript will appear here…"></textarea>
+        <div id="transcript-note" style="font-size:12px; color:#888; margin-top:6px; line-height:1.5;"></div>
+      </div>
+
       <div class="field">
-        <label>Your notes <span class="hint">(describe what you saw)</span></label>
-        <textarea id="url-notes" rows="5" placeholder="e.g. 18k views, comments asking why the plant stretches. Creator doesn't explain it. 3 similar posts this week."></textarea>
+        <label>Your notes <span class="hint">(optional — views, context, why it caught your eye)</span></label>
+        <textarea id="url-notes" rows="3" placeholder="e.g. 18k views, comments asking why the plant stretches. Creator doesn't explain it."></textarea>
       </div>
     </div>
 
@@ -588,6 +603,70 @@ function hideStatus() {
   document.getElementById('main-status').className = 'status';
 }
 
+// ── URL input: show Extract button when URL is present ─────────
+function onUrlInput() {
+  var val = document.getElementById('url-input').value.trim();
+  document.getElementById('transcript-extract-row').style.display = val ? 'block' : 'none';
+  // Reset transcript if URL changes
+  document.getElementById('transcript-field').style.display = 'none';
+  document.getElementById('transcript-text').value = '';
+  document.getElementById('transcript-note').textContent = '';
+}
+
+// ── EXTRACT TRANSCRIPT from video URL ──────────────────────────
+async function handleTranscriptExtract() {
+  var url = document.getElementById('url-input').value.trim();
+  if (!url) { alert('Please enter a URL first.'); return; }
+
+  var btn = document.getElementById('transcript-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Extracting…';
+  showStatus('Fetching transcript — this may take a few seconds…', 'loading');
+
+  try {
+    var res    = await fetch('/.netlify/functions/extract-transcript', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    });
+    var result = await res.json();
+
+    if (result.error) throw new Error(result.error);
+
+    var field = document.getElementById('transcript-field');
+    var label = document.getElementById('transcript-label');
+    var area  = document.getElementById('transcript-text');
+    var note  = document.getElementById('transcript-note');
+
+    if (result.success && result.transcript) {
+      label.textContent = '✅ ' + result.platform + ' transcript — edit if needed';
+      area.value        = result.transcript;
+    } else {
+      label.textContent = 'ℹ️ ' + (result.platform || 'Info');
+      area.value        = result.transcript || '';
+    }
+
+    note.textContent = result.note || '';
+    field.style.display = 'block';
+    field.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    hideStatus();
+
+    // Auto-detect platform if not already selected
+    if (result.platform) {
+      var platformSel = document.getElementById('platform');
+      if (!platformSel.value) {
+        var map = { YouTube: 'YouTube', TikTok: 'TikTok', Instagram: 'Instagram' };
+        if (map[result.platform]) platformSel.value = map[result.platform];
+      }
+    }
+
+  } catch(err) {
+    showStatus('❌ ' + (err.message || 'Could not extract transcript'), 'error');
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🎙️ Extract transcript / captions';
+}
+
 // ── EXTRACT TEXT from screenshots ──────────────────────────────
 async function handleExtract() {
   if (!images.length) { alert('Please choose at least one screenshot first.'); return; }
@@ -646,10 +725,21 @@ async function handleSubmit() {
 
   } else {
     sourceUrl = document.getElementById('url-input').value.trim();
-    rawInput  = document.getElementById('url-notes').value.trim();
+    var urlNotes     = document.getElementById('url-notes').value.trim();
+    var urlTranscript = document.getElementById('transcript-text').value.trim();
+
     if (!sourceUrl) { alert('Please enter a URL first.'); return; }
-    // If no notes, use a short placeholder so raw_input isn't blank
-    if (!rawInput) rawInput = 'Signal from: ' + sourceUrl;
+
+    // Combine transcript + notes, or fall back to placeholder
+    if (urlTranscript && urlNotes) {
+      rawInput = urlTranscript + '\n\n[Notes: ' + urlNotes + ']';
+    } else if (urlTranscript) {
+      rawInput = urlTranscript;
+    } else if (urlNotes) {
+      rawInput = urlNotes;
+    } else {
+      rawInput = 'Signal from: ' + sourceUrl;
+    }
   }
 
   var platform   = document.getElementById('platform').value;
@@ -692,6 +782,10 @@ function resetAll() {
   document.getElementById('platform').value     = '';
   document.getElementById('extracted-text').value = '';
   document.getElementById('extracted-field').style.display = 'none';
+  document.getElementById('transcript-text').value = '';
+  document.getElementById('transcript-note').textContent = '';
+  document.getElementById('transcript-field').style.display = 'none';
+  document.getElementById('transcript-extract-row').style.display = 'none';
 
   images = []; textExtracted = false;
   renderPhotosGrid();
