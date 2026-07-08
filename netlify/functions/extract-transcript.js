@@ -10,10 +10,10 @@ function detectPlatform(url) {
 
 function extractYouTubeId(url) {
   const patterns = [
-    /[?&]v=([a-zA-Z0-9_-]{11})/,           // youtube.com/watch?v=
-    /youtu\.be\/([a-zA-Z0-9_-]{11})/,       // youtu.be/
-    /\/shorts\/([a-zA-Z0-9_-]{11})/,        // youtube.com/shorts/
-    /\/embed\/([a-zA-Z0-9_-]{11})/,         // youtube.com/embed/
+    /[?&]v=([a-zA-Z0-9_-]{11})/,
+    /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+    /\/shorts\/([a-zA-Z0-9_-]{11})/,
+    /\/embed\/([a-zA-Z0-9_-]{11})/,
   ];
   for (const p of patterns) {
     const m = url.match(p);
@@ -30,6 +30,26 @@ function respond(statusCode, body) {
   };
 }
 
+// ── Supadata fallback (uses 1 credit if captions exist, 2 credits/min if AI-generated) ──
+async function supadataTranscript(url) {
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) return null; // key not set, skip silently
+
+  try {
+    const res = await fetch(
+      `https://api.supadata.ai/v1/transcript?url=${encodeURIComponent(url)}`,
+      { headers: { 'x-api-key': apiKey } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.content || !data.content.length) return null;
+    // content is an array of { text, offset, duration } — join into plain text
+    return data.content.map(s => s.text.trim()).join(' ').replace(/\s+/g, ' ').trim();
+  } catch {
+    return null;
+  }
+}
+
 // ── Handlers ───────────────────────────────────────────────────
 
 async function handleYouTube(url) {
@@ -38,68 +58,90 @@ async function handleYouTube(url) {
     return respond(400, { error: 'Could not extract a YouTube video ID from this URL.' });
   }
 
-  const segments = await YoutubeTranscript.fetchTranscript(videoId);
+  // 1. Free: youtube-transcript package
+  let transcript = null;
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(videoId);
+    if (segments && segments.length > 0) {
+      transcript = segments.map(s => s.text.trim()).join(' ').replace(/\s+/g, ' ').trim();
+    }
+  } catch { /* fall through */ }
 
-  if (!segments || segments.length === 0) {
-    return respond(200, {
-      success: false,
-      platform: 'YouTube',
-      transcript: '',
-      note: 'No captions found for this video. It may not have auto-generated captions, or they may be disabled.',
-    });
+  if (transcript) {
+    return respond(200, { success: true, platform: 'YouTube', transcript, source: 'free' });
   }
 
-  const text = segments
-    .map(s => s.text.trim())
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // 2. Fallback: Supadata (costs 1 credit, or 2 credits/min if AI-generated)
+  transcript = await supadataTranscript(url);
+  if (transcript) {
+    return respond(200, { success: true, platform: 'YouTube', transcript, source: 'supadata' });
+  }
 
+  // 3. Nothing found
+  const isShorts = url.includes('/shorts/');
   return respond(200, {
-    success: true,
+    success: false,
     platform: 'YouTube',
-    transcript: text,
-    wordCount: text.split(/\s+/).length,
+    transcript: '',
+    note: isShorts
+      ? "No transcript found. Shorts often don't have auto-captions. To capture spoken content: open the Short → three-dot menu → Captions, screenshot it, then use the Screenshot tab."
+      : "No transcript found (captions may be disabled). Add the spoken content manually in the notes field.",
   });
 }
 
 async function handleTikTok(url) {
-  // TikTok oEmbed: returns the video caption/title (free, no auth needed)
-  const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`;
-  const res = await fetch(oembedUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-
-  if (!res.ok) {
-    return respond(200, {
-      success: false,
-      platform: 'TikTok',
-      transcript: '',
-      note: `TikTok returned an error (${res.status}). The video may be private or the URL format may be unsupported. Try pasting the caption/notes manually.`,
-    });
+  // 1. Supadata (handles TikTok transcripts natively)
+  const transcript = await supadataTranscript(url);
+  if (transcript) {
+    return respond(200, { success: true, platform: 'TikTok', transcript, source: 'supadata' });
   }
 
-  const data = await res.json();
-
-  // Build a useful text block from what oEmbed returns
-  const parts = [];
-  if (data.title)       parts.push(`Caption: ${data.title}`);
-  if (data.author_name) parts.push(`Creator: ${data.author_name}`);
-
-  const text = parts.join('\n');
+  // 2. Fallback: oEmbed for caption text only
+  try {
+    const res = await fetch(
+      `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const parts = [];
+      if (data.title)       parts.push(`Caption: ${data.title}`);
+      if (data.author_name) parts.push(`Creator: ${data.author_name}`);
+      if (parts.length) {
+        return respond(200, {
+          success: true,
+          platform: 'TikTok',
+          transcript: parts.join('\n'),
+          note: process.env.SUPADATA_API_KEY
+            ? 'Supadata could not retrieve a spoken transcript — caption text returned instead.'
+            : 'Add SUPADATA_API_KEY to Netlify env vars to get full spoken transcripts. Caption text returned for now.',
+        });
+      }
+    }
+  } catch { /* fall through */ }
 
   return respond(200, {
-    success: true,
+    success: false,
     platform: 'TikTok',
-    transcript: text,
-    note: "This is the video's caption text only — not the spoken transcript. TikTok's spoken words can't be extracted automatically. For the full audio transcript, play the video with captions on, screenshot them, then use the Screenshot tab.",
+    transcript: '',
+    note: 'Could not retrieve transcript. The video may be private. Try pasting notes manually.',
   });
 }
 
-function handleInstagram() {
+async function handleInstagram(url) {
+  // 1. Supadata (handles Instagram transcripts natively)
+  const transcript = await supadataTranscript(url);
+  if (transcript) {
+    return respond(200, { success: true, platform: 'Instagram', transcript, source: 'supadata' });
+  }
+
   return respond(200, {
     success: false,
     platform: 'Instagram',
     transcript: '',
-    note: "Instagram blocks external transcript access. To capture the content: play the video with captions on → screenshot the captions → switch to the Screenshot tab and extract the text there.",
+    note: process.env.SUPADATA_API_KEY
+      ? 'Supadata could not retrieve a transcript for this Instagram video (may be private or a story).'
+      : 'Add SUPADATA_API_KEY to Netlify env vars to enable Instagram transcripts. Alternatively: play the video with captions on → screenshot → use the Screenshot tab.',
   });
 }
 
@@ -129,30 +171,16 @@ exports.handler = async (event) => {
     switch (platform) {
       case 'youtube':   return await handleYouTube(url.trim());
       case 'tiktok':    return await handleTikTok(url.trim());
-      case 'instagram': return handleInstagram();
+      case 'instagram': return await handleInstagram(url.trim());
       default:
         return respond(200, {
           success: false,
           platform: 'unknown',
           transcript: '',
-          note: 'Transcript extraction works for YouTube (full transcript), TikTok (caption text), and Instagram (guidance). This URL does not match any of those platforms.',
+          note: 'Transcript extraction works for YouTube, TikTok, and Instagram URLs.',
         });
     }
   } catch (err) {
-    // YoutubeTranscript throws on disabled/missing captions
-    const isNoCaption = err.message && (
-      err.message.includes('Could not get') ||
-      err.message.includes('Transcript is disabled') ||
-      err.message.includes('No captions')
-    );
-    if (isNoCaption) {
-      return respond(200, {
-        success: false,
-        platform: 'YouTube',
-        transcript: '',
-        note: 'No captions found for this video. Auto-captions may be disabled. Try pasting the script/notes manually.',
-      });
-    }
     return respond(500, { error: err.message });
   }
 };
