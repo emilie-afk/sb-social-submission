@@ -129,3 +129,36 @@ Inspected the current source and all 10 reachable commits:
   service-account key file (`sb-social-listening-*.json`). It is not in Git; keep it out of
   any upload, and if it is the key used in Netlify, consider replacing the key and deleting
   the local copy (approval needed).
+
+## Legacy Intake Apps Script (outside this repo — separate plan, nothing executed)
+
+The older intake app (`Code.gs` + `intake.html`, the form this site replaced) keeps a Claude API
+key in its **Script Properties** (`CLAUDE_API_KEY`). Its setup instructions deploy it as a web
+app with *Execute as: Me* and *Who has access: Anyone*.
+
+Why that matters:
+- **No sign-in.** Every top-level server function whose name doesn't end in `_` can be called
+  from the browser (`google.script.run`) by anyone who opens the web-app URL:
+  - `processIntakeWithClaude`: spends the Claude key with no limit (text and images);
+  - `appendIntakeRow`: writes to the sheet via `appendRow` (formula-like text can be interpreted);
+  - `getDailyBoard`, `getRecentTrackerEntries`, `getSummary`: return sheet data.
+- **Framing allowed.** `XFrameOptionsMode.ALLOWALL` lets any site embed the page.
+- **Who can read the key.** Script Properties are not sent to visitors, but anyone who can edit
+  the script can read them. If the script is bound to the public sheet and the sheet's link
+  access is *Editor*, everyone with the link can read the key.
+
+Steps (each needs the owner's approval; retiring an Apps Script deployment is the owner's call):
+1. Intake sheet → Extensions → Apps Script → **Deploy → Manage deployments**. If a web-app
+   deployment is active and this Netlify site has replaced the form, **archive** it.
+2. Intake sheet → **Share**: record whether link access is *Viewer* or *Editor* (no change to
+   the sheet staying public).
+3. **Key:**
+   - script no longer used → delete the `CLAUDE_API_KEY` Script Property;
+   - still used → give it its own key, separate from this site's `CLAUDE_API_KEY`;
+   - if the web app was public or the sheet was editable by link → **rotate** that key in the
+     Anthropic console and check its usage for unexpected calls.
+4. If the script must stay deployed: restrict access to the Google Workspace domain, rename server
+   functions with a trailing `_` (private) except those the page needs, and add a check
+   before any Claude call or sheet write.
+5. Confirm afterwards: opening the old web-app URL no longer serves the form (or requires
+   sign-in), and `processIntakeWithClaude` can't be called anonymously.
