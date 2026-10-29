@@ -1,3 +1,15 @@
 [build]
   functions = "netlify/functions"
   publish   = "public"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Inline handlers in the existing page need 'unsafe-inline'; everything else is same-origin only.
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; manifest-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Strict-Transport-Security = "max-age=31536000"
+    Cache-Control = "no-cache"

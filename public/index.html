@@ -31,6 +31,7 @@ html, body {
 }
 .header h1 { font-size: 17px; font-weight: 700; }
 .header p  { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+.header .signout { position: absolute; top: 14px; right: 16px; background: none; border: 1px solid rgba(255,255,255,0.5); color: white; border-radius: 6px; font-size: 12px; padding: 4px 10px; cursor: pointer; }
 
 .content {
   padding: 14px 14px 120px;
@@ -305,6 +306,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 
 <div class="header">
   <h1>🌵 Signal Intake</h1>
+  <button class="signout" id="signout-btn" onclick="logout()">Sign out</button>
   <p>Submit raw signals — the dashboard handles AI analysis.</p>
 </div>
 
@@ -440,48 +442,99 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </div><!-- /app -->
 
 <script>
-// ── password gate ──────────────────────────────────────────────
-var AUTH_KEY    = 'sb_auth_ok';
-var AUTH_EXPIRY = 7 * 24 * 60 * 60 * 1000;
+// ── session (server-side) ──────────────────────────────────────
+// The session lives in a Secure, HttpOnly cookie set by the server. The browser never
+// stores the password or any auth flag; the CSRF token is kept in memory only.
+var csrfToken = null;
 
-function isAuthed() {
-  var stored = localStorage.getItem(AUTH_KEY);
-  if (!stored) return false;
-  try {
-    var data = JSON.parse(stored);
-    return Date.now() < data.expires;
-  } catch(e) { return false; }
-}
-function showGate() {
+function showGate(message) {
+  csrfToken = null;
   document.getElementById('password-gate').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
+  document.getElementById('gate-error').textContent = message || '';
   setTimeout(function() { document.getElementById('gate-input').focus(); }, 100);
 }
 function showApp() {
   document.getElementById('password-gate').style.display = 'none';
   document.getElementById('app').style.display = 'block';
 }
+
+// POST JSON to a protected function. A 401 returns the user to the password screen.
+async function api(name, payload) {
+  var res = await fetch('/.netlify/functions/' + name, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken || '' },
+    body: JSON.stringify(payload)
+  });
+  var data = {};
+  try { data = await res.json(); } catch(e) {}
+  if (res.status === 401) {
+    showGate('Your session has ended — please sign in again.');
+    var e401 = new Error('Please sign in again.'); e401.auth = true; throw e401;
+  }
+  return { status: res.status, data: data };
+}
+
+async function restoreSession() {
+  try {
+    var res = await fetch('/.netlify/functions/session', { credentials: 'same-origin', cache: 'no-store' });
+    if (res.ok) {
+      var data = await res.json();
+      if (data.authenticated && data.csrfToken) { csrfToken = data.csrfToken; showApp(); return; }
+    }
+    var info = {};
+    try { info = await res.json(); } catch(e) {}
+    showGate(res.status === 503 ? (info.error || 'Sign-in is unavailable right now.') : '');
+  } catch(e) { showGate('Connection error — reload to try again.'); }
+}
+
 async function checkPassword() {
-  var pw  = document.getElementById('gate-input').value;
+  var input = document.getElementById('gate-input');
+  var pw  = input.value;
   var btn = document.getElementById('gate-btn');
   var err = document.getElementById('gate-error');
   if (!pw) return;
   btn.disabled = true; btn.textContent = '…'; err.textContent = '';
   try {
     var res  = await fetch('/.netlify/functions/auth', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: pw })
     });
-    var data = await res.json();
-    if (data.success) {
-      localStorage.setItem(AUTH_KEY, JSON.stringify({ expires: Date.now() + AUTH_EXPIRY }));
+    var data = {};
+    try { data = await res.json(); } catch(e) {}
+    if (res.ok && data.success && data.csrfToken) {
+      csrfToken = data.csrfToken;
+      input.value = '';
       showApp();
     } else {
       err.textContent = data.error || 'Incorrect password.';
-      document.getElementById('gate-input').select();
+      input.select();
     }
   } catch(e) { err.textContent = 'Connection error — try again.'; }
   btn.disabled = false; btn.textContent = 'Unlock';
+}
+
+async function logout() {
+  // Only report "Signed out" once the server confirms the session was revoked.
+  var btn = document.getElementById('signout-btn');
+  btn.disabled = true; btn.textContent = '…';
+  var ok = false;
+  try {
+    var res = await fetch('/.netlify/functions/logout', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken || '' },
+      body: '{}'
+    });
+    var data = {};
+    try { data = await res.json(); } catch(e) {}
+    ok = res.ok && data.success === true;
+  } catch(e) { ok = false; }
+  btn.disabled = false; btn.textContent = 'Sign out';
+  if (ok) { showGate('Signed out.'); return; }
+  // The server session may still be active: stay in the app and offer a retry.
+  showStatus('⚠️ Could not sign out — your session may still be active on this device. Check your connection and tap Sign out again.', 'error');
 }
 
 // ── state ──────────────────────────────────────────────────────
@@ -491,8 +544,11 @@ var textExtracted = false;
 
 // ── init ───────────────────────────────────────────────────────
 window.onload = function() {
-  if (isAuthed()) { showApp(); } else { showGate(); }
-  var saved = localStorage.getItem('sb_intake_name');
+  // Remove the old browser-only unlock flag (it never authorised anything server-side).
+  try { localStorage.removeItem('sb_auth_ok'); } catch(e) {}
+  restoreSession();
+  var saved = null;
+  try { saved = localStorage.getItem('sb_intake_name'); } catch(e) {}
   if (saved) document.getElementById('submitted-by').value = saved;
   updateFooter();
 };
@@ -581,8 +637,10 @@ function resizeIfNeeded(dataUrl, mimeType, cb) {
   var img = new Image();
   img.onload = function() {
     var MAX = 1200;
-    if (img.width <= MAX && img.height <= MAX) { cb(dataUrl.split(',')[1], mimeType); return; }
-    var scale = MAX / Math.max(img.width, img.height);
+    var b64 = dataUrl.split(',')[1] || '';
+    var supported = /^image\/(jpeg|png|webp|gif)$/.test(mimeType);
+    if (supported && img.width <= MAX && img.height <= MAX && b64.length <= 800000) { cb(b64, mimeType); return; }
+    var scale = Math.min(1, MAX / Math.max(img.width, img.height));
     var canvas = document.createElement('canvas');
     canvas.width  = Math.round(img.width  * scale);
     canvas.height = Math.round(img.height * scale);
@@ -590,8 +648,12 @@ function resizeIfNeeded(dataUrl, mimeType, cb) {
     var resized = canvas.toDataURL('image/jpeg', 0.85);
     cb(resized.split(',')[1], 'image/jpeg');
   };
+  img.onerror = function() { alert('That file could not be read as an image — skipped.'); };
   img.src = dataUrl;
 }
+
+// Total upload size the server accepts for one extraction (base64 characters).
+var MAX_UPLOAD_B64 = 5600000;
 
 // ── status helpers ─────────────────────────────────────────────
 function showStatus(msg, type) {
@@ -624,13 +686,13 @@ async function handleTranscriptExtract() {
   showStatus('Fetching transcript — this may take a few seconds…', 'loading');
 
   try {
-    var res    = await fetch('/.netlify/functions/extract-transcript', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url })
-    });
-    var result = await res.json();
-
-    if (result.error) throw new Error(result.error);
+    var r = await api('extract-transcript', { url: url });
+    if (r.status === 409 && r.data.code === 'in_progress') {
+      await new Promise(function(ok) { setTimeout(ok, 4000); });
+      r = await api('extract-transcript', { url: url });
+    }
+    var result = r.data;
+    if (r.status >= 400 || result.error) throw new Error(result.error || 'Could not extract transcript');
 
     var field = document.getElementById('transcript-field');
     var label = document.getElementById('transcript-label');
@@ -676,12 +738,11 @@ async function handleExtract() {
   showStatus('Reading text from your screenshot(s) — about 5 seconds…', 'loading');
 
   try {
-    var res    = await fetch('/.netlify/functions/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images: images.map(function(i) { return { base64: i.base64, mimeType: i.mimeType }; }) })
-    });
-    var result = await res.json();
-    if (result.error) throw new Error(result.error);
+    var total = images.reduce(function(n, i) { return n + i.base64.length; }, 0);
+    if (total > MAX_UPLOAD_B64) throw new Error('These screenshots are too large together — remove a few and try again.');
+    var r = await api('analyze', { images: images.map(function(i) { return { base64: i.base64, mimeType: i.mimeType }; }) });
+    var result = r.data;
+    if (r.status >= 400 || result.error) throw new Error(result.error || 'Could not extract text');
 
     // Show extracted text in editable textarea
     document.getElementById('extracted-text').value = result.rawText || '';
@@ -707,7 +768,7 @@ async function handleExtract() {
 // ── SUBMIT to sheet ────────────────────────────────────────────
 async function handleSubmit() {
   var name = document.getElementById('submitted-by').value.trim();
-  localStorage.setItem('sb_intake_name', name);
+  try { localStorage.setItem('sb_intake_name', name); } catch(e) {}
   var creatorName = document.getElementById('creator-name').value.trim();
 
   var rawInput = '', sourceUrl = '';
@@ -743,32 +804,70 @@ async function handleSubmit() {
   }
 
   var platform   = document.getElementById('platform').value;
+  var payload = { rawInput: rawInput, sourceUrl: sourceUrl, platform: platform, sourceName: creatorName, submittedBy: name };
+  payload.submissionId = submissionIdFor(payload);
 
   var btn = document.getElementById('submit-btn');
   btn.disabled = true; btn.textContent = '⏳ Saving…';
   showStatus('Saving to the Intake sheet…', 'loading');
 
   try {
-    var res    = await fetch('/.netlify/functions/save', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        rawInput:     rawInput,
-        sourceUrl:    sourceUrl,
-        platform:     platform,
-        sourceName:   creatorName,
-        submittedBy:  name,
-      })
-    });
-    var result = await res.json();
-    if (!result.success) throw new Error(result.error || 'Unknown error');
+    var r = await api('save', payload);
+    // Another tab/click is already saving this entry (or the sheet is still settling after
+    // a timeout): wait and ask again with the same id, for up to about a minute.
+    var waited = 0;
+    while (r.status === 409 && r.data.code === 'in_progress' && waited < 60) {
+      showStatus('Still saving…', 'loading');
+      var pause = Math.min(10, Math.max(1, r.data.retryAfter || 3));
+      await new Promise(function(ok) { setTimeout(ok, pause * 1000); });
+      waited += pause;
+      r = await api('save', payload);
+    }
+    var result = r.data;
 
-    showStatus('✅ Saved! The dashboard will pick it up for AI analysis.', 'success');
-    setTimeout(resetAll, 2500);
+    if (r.status === 200 && result.success) {
+      clearPendingSubmission();
+      showStatus('✅ Saved to the sheet and sent to the dashboard.', 'success');
+      setTimeout(resetAll, 2500);
+      return;
+    }
+    if (result.partial) {
+      // Sheet row exists; only the dashboard delivery is missing. Retrying re-sends only that.
+      showStatus('⚠️ ' + result.message, 'error');
+      btn.disabled = false; btn.textContent = '🔁 Retry dashboard delivery';
+      return;
+    }
+    throw new Error(result.message || result.error || 'Could not save');
 
   } catch(err) {
-    showStatus('❌ ' + (err.message || 'Could not save'), 'error');
-    btn.disabled = false; btn.textContent = '✅ Submit to sheet';
+    if (err.auth) { btn.disabled = false; btn.textContent = '✅ Submit to sheet'; return; }
+    showStatus('❌ ' + (err.message || 'Could not save') + ' Your entry is still here — tap Retry.', 'error');
+    btn.disabled = false; btn.textContent = '🔁 Retry';
   }
+}
+
+// ── submission id (idempotency) ────────────────────────────────
+// The same content keeps the same id across retries and double-clicks, so the server
+// never writes a second sheet row or dashboard signal for it. Changed content gets a new id.
+var PENDING_KEY = 'sb_pending_submission';
+function newId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  var b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  var h = Array.from(b, function(x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+}
+function submissionIdFor(payload) {
+  var content = JSON.stringify([payload.rawInput, payload.sourceUrl, payload.platform, payload.sourceName, payload.submittedBy]);
+  var pending = null;
+  try { pending = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null'); } catch(e) {}
+  if (pending && pending.content === content && pending.id) return pending.id;
+  var id = newId();
+  try { sessionStorage.setItem(PENDING_KEY, JSON.stringify({ id: id, content: content })); } catch(e) {}
+  return id;
+}
+function clearPendingSubmission() {
+  try { sessionStorage.removeItem(PENDING_KEY); } catch(e) {}
 }
 
 // ── reset ──────────────────────────────────────────────────────
