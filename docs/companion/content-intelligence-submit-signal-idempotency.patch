@@ -1,311 +1,831 @@
-From 8d2a6c06b3bd84f1a06479041c09164f2dfd1099 Mon Sep 17 00:00:00 2001
+From dca564fdcd363cebb5bb371b1bfdbb631b278a14 Mon Sep 17 00:00:00 2001
 From: SB Team <noreply@succulentsbox.com>
-Date: Wed, 28 Oct 2026 16:49:48 +0700
-Subject: [PATCH] submit-signal: retry-safe client_submission_id
- (conflict-targeted)
+Date: Thu, 29 Oct 2026 13:53:11 +0700
+Subject: [PATCH 1/2] submit-signal: retry-safe client_submission_id on the
+ hardened endpoint
 
-- Rows with a client_submission_id use INSERT ... ON CONFLICT (client_submission_id)
-  DO NOTHING; rows not inserted are verified to exist before being acknowledged
-- Any other error (unrelated unique constraint, missing migration) returns 500
-- Rows without an id keep the previous insert path; no error details returned
-- Migration: nullable column + full UNIQUE constraint (run before deploying)
-- Tests: node --test tests/*.test.js
+Optional UUID from integrations that retry (Social Submission). Second dedup key
+beside submission_key: stored ids are acknowledged without inserting; a
+concurrent same-id insert (unique violation on that constraint only) is
+re-checked and the rest of the batch inserted; skipped rows are verified to
+exist before acknowledging; missing column -> 503, never false success; rows
+without an id never touch the column. Keeps token auth, validation,
+submission_key ON CONFLICT and bounded clustering unchanged.
+
+Separate migration 20261029_signals_client_submission_id.sql (nullable column,
+UNIQUE, format check, browser-write guard trigger). Tests: 8 endpoint cases on
+the fake (extended for extra unique keys, missing columns, interleaving hooks)
+and PostgreSQL checks in tests/db (idempotent migration, arbiter semantics,
+unrelated violation, concurrency, browser users denied). Docs updated.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- netlify/functions/submit-signal.js            |  73 ++++++++--
- package.json                                  |   3 +-
- .../20261028_signals_client_submission_id.sql |  21 +++
- tests/submit-signal-idempotency.test.js       | 133 ++++++++++++++++++
- 4 files changed, 220 insertions(+), 10 deletions(-)
- create mode 100644 supabase/migrations/20261028_signals_client_submission_id.sql
- create mode 100644 tests/submit-signal-idempotency.test.js
+ SETUP.md                                      |   3 +-
+ docs/SECURITY-ROLLOUT.md                      |  12 +-
+ netlify/functions/submit-signal.js            |  86 ++++++++++-
+ .../20261029_signals_client_submission_id.sql |  41 +++++
+ tests/db/client_id_test.sql                   |  56 +++++++
+ tests/db/run.sh                               |  11 ++
+ tests/helpers/fake-supabase.js                |  35 ++++-
+ tests/helpers/harness.js                      |   4 +-
+ tests/unit/submit-signal-client-id.test.js    | 140 ++++++++++++++++++
+ 9 files changed, 372 insertions(+), 16 deletions(-)
+ create mode 100644 supabase/migrations/20261029_signals_client_submission_id.sql
+ create mode 100644 tests/db/client_id_test.sql
+ create mode 100644 tests/unit/submit-signal-client-id.test.js
 
+diff --git a/SETUP.md b/SETUP.md
+index 1f3b4da..112f297 100644
+--- a/SETUP.md
++++ b/SETUP.md
+@@ -60,7 +60,8 @@ service calls when two scoped secrets share a value). Generate with
+ ## Fresh database install
+ 
+ Run `supabase/schema.sql`, the `schema_v*` and other files in `supabase/` (order: see
+-`tests/db/load_baseline.sh`), then **always last** `supabase/migrations/20261028_ci_access_control.sql`.
++`tests/db/load_baseline.sh`), then `supabase/migrations/20261028_ci_access_control.sql`, then
++`supabase/migrations/20261029_signals_client_submission_id.sql` (in that order).
+ Until that migration runs, tables have row-level security with no policies (closed).
+ 
+ ## Private configuration (SQL editor, values are placeholders)
+diff --git a/docs/SECURITY-ROLLOUT.md b/docs/SECURITY-ROLLOUT.md
+index 2f6e301..e2ece86 100644
+--- a/docs/SECURITY-ROLLOUT.md
++++ b/docs/SECURITY-ROLLOUT.md
+@@ -78,6 +78,11 @@ ownership from display names or GitHub usernames.
+    (from `app_settings`). If either is missing, insert it as in SETUP.md.
+ 5. Re-run `rollout-inventory.sql` ("after"): no non-`ci_` policies on app tables, anon has no
+    privileges, views closed, row counts unchanged (settings/app_settings −1 each if moved).
++6. **Then** run `supabase/migrations/20261029_signals_client_submission_id.sql` (separate,
++   additive, safe to run twice): nullable `signals.client_submission_id`, UNIQUE constraint
++   `signals_client_submission_id_key`, UUID format check, and a trigger so browser users can't
++   set or change it. Must run **before** step 7 deploys the `submit-signal` that accepts it.
++   Check: `select count(*) from signals where client_submission_id is not null;` → 0.
+ 
+ ### 6. Rotate submission tokens (approval required: revokes integrations)
+ ```sql
+@@ -116,6 +121,8 @@ Deploy → Manage deployments → ✏️ → Version: **New version** → Deploy
+   click 📊 again → "already exported", no second row; Published, Learning, Brand Rules,
+   Watchlist, Activity Log, Help.
+ - Intake sheet row → appears in Inbox; Social Submission test → appears; scraper run → counts.
++- Social Submission: re-sending the same test entry (Retry, same submission id) → response
++  `already_received: 1`, still one signal; the signal row has `client_submission_id` set.
+ - GitHub → Actions → run each workflow manually (workflow_dispatch): HTTP 200.
+ - The metrics task: update it to send `x-internal-secret: <METRICS_INGEST_SECRET>`; one run.
+ 
+@@ -139,6 +146,9 @@ Re-enable the GitHub workflows, end the window. Optional clean-up afterwards: de
+   `SCRIPT_SECRET` set, the old version still checks the secret; history will be empty, export works.
+ - **Bad prompt version:** `select ci_activate_prompt_version(<PREVIOUS_ID>);` (versions are immutable).
+ - **Owner locked out:** `select ci_private.bootstrap_owner('<OWNER_EMAIL>');`
++- **client_submission_id change:** the column, constraint and trigger are additive; to undo the
++  code, redeploy the previous `submit-signal` and leave them in place (unset
++  `DASHBOARD_IDEMPOTENT` on Social Submission first). Rows without an id are unaffected either way.
+ - **Token problem:** create a new token and update the integration; old tokens can be
+   re-enabled (`update submission_tokens set active = true where id = '<ID>'`) only if they
+   were never exposed.
+@@ -147,7 +157,7 @@ Re-enable the GitHub workflows, end the window. Optional clean-up afterwards: de
+ 
+ | App | Change | When |
+ |---|---|---|
+-| Social Submission site (`Intake/netlify-site`) | new `SUBMIT_TOKEN` env value; no code change (`is_manual` still honoured) | step 6 |
++| Social Submission site (`emilie-afk/sb-social-submission`, branch `security-hardening`) | **code and config change** (its own rollout: sessions, protected endpoints, idempotent saves). It sends `client_submission_id` (+ `Idempotency-Key`) on every signal; this app stores and deduplicates it after step 5.6. New `SUBMIT_TOKEN` value at step 6. Set `DASHBOARD_IDEMPOTENT=true` there **only after** steps 5.6 and 7 are live and verified | steps 5.6, 6, 7, then 9 |
+ | Instagram scraper / `submit_csv.py` | new token (the CSV script has a token in its source — move it to an env var or delete the script) | step 6 |
+ | Intake sheet / video tracker Apps Scripts | new `SUBMIT_TOKEN` Script Property (code comments updated; no logic change) | step 6 |
+ | Metrics task calling `update-sheet-metrics` | send `METRICS_INGEST_SECRET` instead of `INTERNAL_SECRET` | step 9 |
 diff --git a/netlify/functions/submit-signal.js b/netlify/functions/submit-signal.js
-index 0424064..e62beb5 100644
+index 4470400..7b7659f 100644
 --- a/netlify/functions/submit-signal.js
 +++ b/netlify/functions/submit-signal.js
-@@ -86,6 +86,13 @@ exports.handler = async (event) => {
-   }
+@@ -11,6 +11,15 @@
+  *
+  * Safe to retry: every row gets a submission key (source URL, or the content of a
+  * manual note) and duplicates are skipped instead of inserted twice.
++ *
++ * Optional `client_submission_id` (UUID) from integrations that retry with their own id
++ * (the Social Submission site). It is a second, independent dedup key:
++ *   - a row whose id is already stored is acknowledged without inserting;
++ *   - `submission_key` dedup (ON CONFLICT DO NOTHING) is unchanged;
++ *   - a concurrent insert of the same id is detected by its unique index and re-checked;
++ *   - every skipped row is verified to exist before the request is acknowledged.
++ * Rows without an id never touch the new column, so older callers work before the
++ * migration (20261029_signals_client_submission_id.sql) is applied.
+  */
+ const crypto = require("crypto");
+ const { PublicError, json, parseBody, preflightOrMethod, errorResponse } = require("../lib/http");
+@@ -41,6 +50,21 @@ function date(v) {
+   return s && /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
+ }
+ function oneOfOrNull(v, allowed) { return allowed.includes(v) ? v : null; }
++const CLIENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
++function clientId(v) {
++  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
++  return CLIENT_ID_RE.test(s) ? s : null;
++}
++// The unique index on client_submission_id (not submission_key) was violated.
++function isClientIdConflict(error) {
++  if (!error || error.code !== "23505") return false;
++  const text = `${error.message || ""} ${error.details || ""}`;
++  return text.includes("signals_client_submission_id_key") || /\(client_submission_id\)/.test(text);
++}
++// The new column does not exist yet (migration not applied).
++function isMissingColumn(error) {
++  return !!error && (error.code === "42703" || error.code === "PGRST204") && /client_submission_id/.test(`${error.message || ""} ${error.details || ""}`);
++}
  
-   // ── 3. Map to signals table columns ─────────────────────────
-+  // Optional idempotency key sent by integrations that retry (the Social Submission site
-+  // sends its submission UUID). Rows without it behave exactly as before.
-+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-+  const clientId = (s) => {
-+    const v = typeof s.client_submission_id === "string" ? s.client_submission_id.toLowerCase() : "";
-+    return UUID_RE.test(v) ? v : null;
-+  };
-   const rows = signals.map((s) => {
-     const isManual = s.is_manual ?? s.is_manual_submission ?? false;
-     return {
-@@ -110,6 +117,8 @@ exports.handler = async (event) => {
-     // is_manual: true  = intake sheet or dashboard modal (human submitted)
-     // is_manual: false = scraper (not passed → defaults false)
-     is_manual_submission:  isManual,
-+    // Only set when provided, so callers without it never touch the new column.
-+    ...(clientId(s) ? { client_submission_id: clientId(s) } : {}),
-     };
-   });
+ function submissionKey(row) {
+   const basis = row.source_url
+@@ -90,14 +114,33 @@ exports.handler = async (event) => {
+         is_manual_submission:  isManual,
+       };
+       row.submission_key = submissionKey(row);
++      const cid = clientId(s.client_submission_id);
++      if (cid) row.client_submission_id = cid; // only set when provided (see header)
+       return row;
+     }).filter(r => r.topic || r.source_url || r.caption_summary);
+     if (!rows.length) throw new PublicError(400, "Signals need a topic, source URL or caption");
  
-@@ -134,13 +143,58 @@ exports.handler = async (event) => {
-     };
-   }
+     const sb = serviceClient();
  
--  // ── 5. Batch insert ──────────────────────────────────────────
--  const { data: inserted, error: insertErr } = await supabase
--    .from("signals").insert(newRows).select("id, topic, platform, source_url, caption_summary, plant_or_product, is_manual_submission, priority");
-+  // ── 5. Insert ────────────────────────────────────────────────
-+  // Rows without an id never reference the new column (works before the migration too).
-+  const COLS = "id, topic, platform, source_url, caption_summary, plant_or_product, is_manual_submission, priority";
-+  const COLS_WITH_ID = COLS + ", client_submission_id";
-+  const withId = [];
-+  const withoutId = [];
-+  const seenIds = new Set();
-+  for (const r of newRows) {
-+    if (!r.client_submission_id) { withoutId.push(r); continue; }
-+    if (seenIds.has(r.client_submission_id)) continue;          // same id twice in one batch
-+    seenIds.add(r.client_submission_id);
-+    withId.push(r);
-+  }
-+  const inserted = [];
-+  let acknowledged = 0;
+-    // ── 4. Deduplicate: within the batch, against old rows by URL, and by key ──
+-    const unique = [...new Map(rows.map(r => [r.submission_key, r])).values()];
++    // ── 4. Deduplicate: within the batch, by client id, against old rows by URL, and by key ──
++    // Within the batch: one row per submission_key, and one row per client id.
++    const seenIds = new Set();
++    const unique = [...new Map(rows.map(r => [r.submission_key, r])).values()]
++      .filter(r => !r.client_submission_id || (!seenIds.has(r.client_submission_id) && seenIds.add(r.client_submission_id)));
++    const withIds = unique.filter(r => r.client_submission_id);
 +
-+  // 5a. Rows with a client_submission_id: INSERT … ON CONFLICT (client_submission_id) DO NOTHING.
-+  // Only a conflict on that exact unique key is ignored; any other error (another unique
-+  // constraint, missing migration, …) fails the request, so it is never reported as delivered.
-+  if (withId.length) {
-+    const { data, error } = await supabase
-+      .from("signals")
-+      .upsert(withId, { onConflict: "client_submission_id", ignoreDuplicates: true })
-+      .select(COLS_WITH_ID);
-+    if (error) {
-+      console.error("Insert error (idempotent rows):", error.code);
-+      return { statusCode: 500, body: JSON.stringify({ error: "Failed to insert signals" }) };
-+    }
-+    inserted.push(...(data || []));
-+    // Rows not inserted must already exist with the same id — verify before acknowledging.
-+    const insertedIds = new Set((data || []).map((r) => r.client_submission_id));
-+    const notInserted = withId.map((r) => r.client_submission_id).filter((id) => !insertedIds.has(id));
-+    if (notInserted.length) {
-+      const { data: existing, error: checkErr } = await supabase
-+        .from("signals").select("client_submission_id").in("client_submission_id", notInserted);
-+      const found = new Set((existing || []).map((r) => r.client_submission_id));
-+      if (checkErr || notInserted.some((id) => !found.has(id))) {
-+        console.error("Could not confirm existing signals for retried submissions");
-+        return { statusCode: 500, body: JSON.stringify({ error: "Failed to insert signals" }) };
++    // Ids already stored → acknowledged, not inserted again.
++    const storedIds = async (ids) => {
++      if (!ids.length) return new Set();
++      const { data, error } = await sb.from("signals").select("client_submission_id").in("client_submission_id", ids);
++      if (error) {
++        if (isMissingColumn(error)) throw new PublicError(503, "Signal intake is not ready for submission ids yet. Nothing was saved; it is safe to retry.");
++        throw new PublicError(503, "Could not check for duplicates");
 +      }
-+      acknowledged = notInserted.length;
-+    }
-+  }
- 
--  if (insertErr) {
--    console.error("Insert error:", insertErr);
--    return { statusCode: 500, body: JSON.stringify({ error: "Failed to insert signals", detail: insertErr.message }) };
-+  // 5b. Rows without an id: unchanged behaviour.
-+  if (withoutId.length) {
-+    const { data, error: insertErr } = await supabase.from("signals").insert(withoutId).select(COLS);
-+    if (insertErr) {
-+      console.error("Insert error:", insertErr.code);
-+      return { statusCode: 500, body: JSON.stringify({ error: "Failed to insert signals" }) };
-+    }
-+    inserted.push(...(data || []));
-   }
- 
-   // ── 6. Auto-cluster (fire and forget) ────────────────────────
-@@ -165,9 +219,10 @@ exports.handler = async (event) => {
-     statusCode: 200,
-     body: JSON.stringify({
-       success: true,
--      inserted: newRows.length,
--      skipped,
--      message: `${newRows.length} signal(s) added, ${skipped} duplicate(s) skipped`,
-+      inserted: inserted.length,
-+      skipped: rows.length - inserted.length,
-+      already_received: acknowledged,
-+      message: `${inserted.length} signal(s) added, ${rows.length - inserted.length} duplicate(s) skipped`,
-     }),
-   };
- };
-diff --git a/package.json b/package.json
-index f91c83f..fd8d5aa 100644
---- a/package.json
-+++ b/package.json
-@@ -3,7 +3,8 @@
-   "version": "1.0.0",
-   "description": "Succulents Box social listening dashboard",
-   "scripts": {
--    "dev": "netlify dev"
-+    "dev": "netlify dev",
-+    "test": "node --test tests/*.test.js"
-   },
-   "dependencies": {
-     "@supabase/supabase-js": "^2.45.0",
-diff --git a/supabase/migrations/20261028_signals_client_submission_id.sql b/supabase/migrations/20261028_signals_client_submission_id.sql
-new file mode 100644
-index 0000000..d33c9a5
---- /dev/null
-+++ b/supabase/migrations/20261028_signals_client_submission_id.sql
-@@ -0,0 +1,21 @@
-+-- Idempotency key for signals from integrations that retry (the Social Submission site
-+-- sends client_submission_id = its submission UUID).
-+-- Additive and backward compatible: the column is nullable, and PostgreSQL treats NULLs as
-+-- distinct in a UNIQUE constraint, so existing rows and callers without an id are unaffected.
-+-- A full (non-partial) UNIQUE constraint is used so that
-+--   INSERT … ON CONFLICT (client_submission_id) DO NOTHING
-+-- (supabase-js upsert with ignoreDuplicates) can target it.
-+-- Run this BEFORE deploying the matching submit-signal.js.
++      return new Set((data || []).map(r => r.client_submission_id));
++    };
++    let alreadyReceived = await storedIds(withIds.map(r => r.client_submission_id));
 +
+     const urls = unique.map(r => r.source_url).filter(Boolean);
+     let existingUrls = new Set();
+     if (urls.length) {
+@@ -105,20 +148,48 @@ exports.handler = async (event) => {
+       if (error) throw new PublicError(503, "Could not check for duplicates");
+       existingUrls = new Set((existing || []).map(r => r.source_url));
+     }
+-    const candidates = unique.filter(r => !r.source_url || !existingUrls.has(r.source_url));
++    const pending = () => unique.filter(r =>
++      !(r.client_submission_id && alreadyReceived.has(r.client_submission_id)) &&
++      !(r.source_url && existingUrls.has(r.source_url)));
++    let candidates = pending();
+ 
+     let inserted = [];
+-    if (candidates.length) {
++    const insert = (list) => sb.from("signals")
+       // ON CONFLICT (submission_key) DO NOTHING → retries and concurrent sends are safe
+-      const { data, error } = await sb.from("signals")
+-        .upsert(candidates, { onConflict: "submission_key", ignoreDuplicates: true })
+-        .select("id, is_manual_submission");
++      .upsert(list, { onConflict: "submission_key", ignoreDuplicates: true })
++      .select("id, is_manual_submission, submission_key");
++    if (candidates.length) {
++      let { data, error } = await insert(candidates);
++      if (error && isClientIdConflict(error) && withIds.length) {
++        // A concurrent request stored one of these ids first (the whole statement was rolled
++        // back). Re-check which ids now exist and insert the rest once more.
++        alreadyReceived = await storedIds(withIds.map(r => r.client_submission_id));
++        candidates = pending();
++        ({ data, error } = candidates.length ? await insert(candidates) : { data: [], error: null });
++      }
+       if (error) {
++        if (isMissingColumn(error)) {
++          console.error("submit-signal insert failed: client_submission_id column missing (migration pending)");
++          throw new PublicError(503, "Signal intake is not ready for submission ids yet. Nothing was saved; it is safe to retry.");
++        }
+         console.error("submit-signal insert failed:", error.code || "db error");
+         throw new PublicError(500, "Failed to save signals. Nothing was saved; it is safe to retry.");
+       }
+       inserted = data || [];
+     }
++
++    // Verify every candidate that was not inserted (ON CONFLICT on submission_key) really
++    // exists before acknowledging it; never report delivery for a row that is not stored.
++    const insertedKeys = new Set(inserted.map(r => r.submission_key));
++    const notInserted = candidates.filter(r => !insertedKeys.has(r.submission_key)).map(r => r.submission_key);
++    if (notInserted.length) {
++      const { data: found, error } = await sb.from("signals").select("submission_key").in("submission_key", notInserted);
++      const have = new Set((found || []).map(r => r.submission_key));
++      if (error || notInserted.some(k => !have.has(k))) {
++        console.error("submit-signal: skipped rows could not be verified");
++        throw new PublicError(500, "Failed to confirm saved signals. It is safe to retry.");
++      }
++    }
+     const skipped = signals.length - inserted.length;
+ 
+     // ── 5. Auto-cluster the new rows (bounded per token per day) ──────────
+@@ -139,6 +210,7 @@ exports.handler = async (event) => {
+       success: true,
+       inserted: inserted.length,
+       skipped,
++      already_received: withIds.filter(r => alreadyReceived.has(r.client_submission_id)).length,
+       auto_clustering: autoClustered,
+       message: inserted.length
+         ? `${inserted.length} signal(s) added, ${skipped} duplicate(s) skipped`
+diff --git a/supabase/migrations/20261029_signals_client_submission_id.sql b/supabase/migrations/20261029_signals_client_submission_id.sql
+new file mode 100644
+index 0000000..ba2859f
+--- /dev/null
++++ b/supabase/migrations/20261029_signals_client_submission_id.sql
+@@ -0,0 +1,41 @@
++-- Social Submission companion: optional per-submission idempotency key on signals.
++-- Separate from 20261028_ci_access_control.sql; run AFTER it and BEFORE deploying the
++-- submit-signal change that sends rows with client_submission_id.
++-- Additive and idempotent (safe to run twice). Existing rows and callers are unaffected:
++-- the column is nullable and a UNIQUE constraint allows any number of NULLs.
 +alter table public.signals add column if not exists client_submission_id text;
 +
 +do $$
 +begin
-+  if not exists (
-+    select 1 from pg_constraint
-+    where conrelid = 'public.signals'::regclass and conname = 'signals_client_submission_id_key'
-+  ) then
++  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_key') then
 +    alter table public.signals
 +      add constraint signals_client_submission_id_key unique (client_submission_id);
 +  end if;
++  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_format') then
++    alter table public.signals
++      add constraint signals_client_submission_id_format
++      check (client_submission_id is null or client_submission_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
++  end if;
 +end $$;
-diff --git a/tests/submit-signal-idempotency.test.js b/tests/submit-signal-idempotency.test.js
++
++-- Only the intake service (service role) may set or change the id: a browser user editing
++-- a signal could otherwise attach someone else's id and make that submission look delivered.
++create or replace function ci_private.signals_client_id_guard() returns trigger
++language plpgsql set search_path = '' as $$
++begin
++  if ci_private.is_api_user() and (
++       (tg_op = 'INSERT' and new.client_submission_id is not null) or
++       (tg_op = 'UPDATE' and new.client_submission_id is distinct from old.client_submission_id)) then
++    raise exception 'client_submission_id is set only by the intake service' using errcode = '42501';
++  end if;
++  return new;
++end $$;
++revoke all on function ci_private.signals_client_id_guard() from public, anon, authenticated;
++
++drop trigger if exists signals_client_id_guard on public.signals;
++create trigger signals_client_id_guard
++  before insert or update of client_submission_id on public.signals
++  for each row execute function ci_private.signals_client_id_guard();
++
++comment on column public.signals.client_submission_id is
++  'Idempotency key sent by integrations that retry (Social Submission submission id). Set only by submit-signal (service role).';
+diff --git a/tests/db/client_id_test.sql b/tests/db/client_id_test.sql
 new file mode 100644
-index 0000000..83bb540
+index 0000000..3e423bc
 --- /dev/null
-+++ b/tests/submit-signal-idempotency.test.js
-@@ -0,0 +1,133 @@
-+// Tests for client_submission_id idempotency in submit-signal (fake Supabase client that
-+// mirrors PostgREST semantics: upsert+ignoreDuplicates = INSERT … ON CONFLICT (col) DO NOTHING).
-+// SQL semantics of the migration are verified separately against PostgreSQL 16.
-+const { test } = require("node:test");
-+const assert = require("node:assert/strict");
-+const Module = require("node:module");
++++ b/tests/db/client_id_test.sql
+@@ -0,0 +1,56 @@
++-- client_submission_id migration (Social Submission companion). Runs after rls_test.sql
++-- (reuses its t.* helpers and synthetic users). Any failed expectation raises.
++\set ON_ERROR_STOP 1
++set client_min_messages = warning;
 +
-+function makeDb({ migrated = true, failNextWith = null } = {}) {
-+  const db = { rows: [], migrated, failNextWith, nextId: 1 };
-+  const err = (code) => ({ code, message: "error " + code });
-+  db.client = {
-+    from() {
-+      const q = {
-+        _cols: null, _in: null,
-+        select(cols) { q._cols = cols; return q; },
-+        eq() { return q; },
-+        in(col, vals) { q._in = [col, vals]; return q; },
-+        update() { return { eq: () => Promise.resolve({}) }; },
-+        single: async () => ({ data: { id: "t", active: true, allowed_action: "submit_signal", rate_limit_per_hour: 500 }, error: null }),
-+        then(res, rej) {
-+          const [col, vals] = q._in || [];
-+          if (col === "client_submission_id" && !db.migrated) return Promise.resolve({ data: null, error: err("42703") }).then(res, rej);
-+          return Promise.resolve({ data: db.rows.filter((r) => vals.includes(r[col])), error: null }).then(res, rej);
-+        },
-+        insert(newRows) {
-+          return { select: async (cols) => {
-+            // Like PostgREST: selecting a column that does not exist fails the whole statement.
-+            if (!db.migrated && String(cols || "").includes("client_submission_id")) return { data: null, error: err("42703") };
-+            if (db.failNextWith) { const c = db.failNextWith; db.failNextWith = null; return { data: null, error: err(c) }; }
-+            if (!db.migrated && newRows.some((r) => "client_submission_id" in r)) return { data: null, error: err("42703") };
-+            const out = newRows.map((r) => ({ id: db.nextId++, client_submission_id: null, ...r }));
-+            db.rows.push(...out); return { data: out, error: null };
-+          } };
-+        },
-+        upsert(newRows, opts) {
-+          return { select: async () => {
-+            if (!db.migrated) return { data: null, error: err("42P10") };
-+            assert.equal(opts.onConflict, "client_submission_id");
-+            assert.equal(opts.ignoreDuplicates, true);
-+            // An unrelated unique constraint still raises 23505 (ON CONFLICT targets one key only).
-+            if (db.failNextWith) { const c = db.failNextWith; db.failNextWith = null; return { data: null, error: err(c) }; }
-+            const out = [];
-+            for (const r of newRows) {
-+              if (db.rows.some((x) => x.client_submission_id === r.client_submission_id)) continue;
-+              const row = { id: db.nextId++, ...r }; db.rows.push(row); out.push(row);
++-- schema
++do $$ begin
++  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='signals' and column_name='client_submission_id')
++    then raise exception 'FAIL column missing'; end if;
++  if not exists (select 1 from pg_constraint where conname='signals_client_submission_id_key' and contype='u')
++    then raise exception 'FAIL unique constraint missing'; end if;
++end $$;
++
++-- service role (how submit-signal writes)
++set role service_role;
++select set_config('request.jwt.claims', '{"role":"service_role"}', false);
++select t.expect_ok($q$insert into signals (topic, status, submission_key, client_submission_id) values ('cid one', 'New', 'k-cid-1', '3f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f')$q$, 'service insert with id');
++-- retry with the same content key: ON CONFLICT (submission_key) DO NOTHING → no error, no row
++select t.expect_ok($q$insert into signals (topic, status, submission_key, client_submission_id) values ('cid one', 'New', 'k-cid-1', '3f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f') on conflict (submission_key) do nothing$q$, 'same key retry');
++-- same id, different content key: the id constraint is NOT the arbiter → 23505 on that constraint
++do $$ begin
++  insert into signals (topic, status, submission_key, client_submission_id) values ('cid one edited', 'New', 'k-cid-1b', '3f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f') on conflict (submission_key) do nothing;
++  raise exception 'FAIL duplicate id accepted';
++exception when unique_violation then
++  if sqlerrm not like '%signals_client_submission_id_key%' then raise exception 'FAIL wrong constraint: %', sqlerrm; end if;
++end $$;
++-- NULL ids are unlimited (old callers)
++select t.expect_ok($q$insert into signals (topic, status, submission_key) values ('no id a', 'New', 'k-noid-a'), ('no id b', 'New', 'k-noid-b')$q$, 'null ids');
++-- format check
++do $$ begin
++  insert into signals (topic, status, submission_key, client_submission_id) values ('bad', 'New', 'k-bad', 'not-a-uuid');
++  raise exception 'FAIL bad id format accepted';
++exception when check_violation then null; end $$;
++reset role; select set_config('request.jwt.claims', '', false);
++
++-- an unrelated unique violation names a different constraint (submit-signal must not acknowledge it)
++create unique index if not exists t_signals_search_tag_uniq on public.signals (search_tag) where search_tag = 't-unrelated';
++insert into signals (topic, status, submission_key, search_tag) values ('tag a', 'New', 'k-tag-a', 't-unrelated');
++do $$ begin
++  insert into signals (topic, status, submission_key, search_tag, client_submission_id) values ('tag b', 'New', 'k-tag-b', 't-unrelated', '4a2d3c0f-2b3c-4d4e-9f00-1b2c3d4e5f60') on conflict (submission_key) do nothing;
++  raise exception 'FAIL unrelated duplicate accepted';
++exception when unique_violation then
++  if sqlerrm like '%client_submission_id%' then raise exception 'FAIL unrelated violation looks like an id conflict: %', sqlerrm; end if;
++end $$;
++drop index t_signals_search_tag_uniq;
++
++-- browser users (assistant = writer) cannot set or change the id
++set role authenticated;
++select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000000a3","role":"authenticated"}', false);
++select t.expect_ok($q$insert into signals (topic, status) values ('assistant row without id', 'New')$q$, 'assistant insert without id');
++select t.expect_denied($q$insert into signals (topic, status, client_submission_id) values ('assistant with id', 'New', '5b3e4d10-3c4d-4e5f-a011-2c3d4e5f6071')$q$, 'assistant insert with id');
++select t.expect_denied($q$update signals set client_submission_id = '6c4f5e21-4d5e-4f60-b122-3d4e5f607182' where topic = 'assistant row without id'$q$, 'assistant set id');
++select t.expect_ok($q$update signals set status = 'Dismissed' where topic = 'assistant row without id'$q$, 'assistant other edits unaffected');
++reset role; select set_config('request.jwt.claims', '', false);
++
++\echo 'CLIENT ID TESTS PASSED'
+diff --git a/tests/db/run.sh b/tests/db/run.sh
+index 0676abe..df5a9b0 100755
+--- a/tests/db/run.sh
++++ b/tests/db/run.sh
+@@ -18,6 +18,15 @@ $Q -f "$ROOT/supabase/migrations/20261028_ci_access_control.sql" 2>&1 | grep -i
+ $Q -f "$ROOT/supabase/migrations/20261028_ci_access_control.sql" >/dev/null 2>&1
+ $Q -Atc "select case when (select bool_and(content_locked and ever_approved) from script_outputs where id::text like '2000000f-%') then 'legacy approval backfill: ok' else 'FAIL legacy backfill' end"
+ $Q -o /dev/null -f "$ROOT/tests/db/rls_test.sql"
++# Social Submission companion: client_submission_id migration (twice = idempotent) + checks
++$Q -f "$ROOT/supabase/migrations/20261029_signals_client_submission_id.sql" >/dev/null
++$Q -f "$ROOT/supabase/migrations/20261029_signals_client_submission_id.sql" >/dev/null
++$Q -o /dev/null -f "$ROOT/tests/db/client_id_test.sql"
++# two concurrent inserts of the same id with different content keys -> exactly one row
++CID="7d5f6f32-5e6f-4071-8233-4e5f60718293"
++psql -X -q -d "$DB" -c "begin; insert into signals (topic, status, submission_key, client_submission_id) values ('race a','New','k-race-a','$CID') on conflict (submission_key) do nothing; select pg_sleep(1); commit;" >/dev/null &
++sleep 0.2; psql -X -q -d "$DB" -c "insert into signals (topic, status, submission_key, client_submission_id) values ('race b','New','k-race-b','$CID') on conflict (submission_key) do nothing" >/dev/null 2>&1 || true; wait
++$Q -Atc "select case when count(*) = 1 then 'concurrent client id insert: ok' else 'FAIL concurrent client id duplicates' end from signals where client_submission_id = '$CID'"
+ # R5: two concurrent sessions inserting the same snapshot key -> one row
+ VID=$($Q -Atc "insert into published_videos (video_url) values ('https://example.test/v/concurrent') returning id")
+ INS="insert into performance_snapshots (published_video_id, snapshot_type, views, idempotency_key) values ('$VID', '24h', 1, 'k-concurrent') on conflict (idempotency_key) do nothing"
+@@ -33,3 +42,5 @@ FRESH="${DB}_fresh"
+ BASELINE_DIR=supabase "$ROOT/tests/db/load_baseline.sh" "$FRESH" >/dev/null 2>&1
+ psql -X -q -v ON_ERROR_STOP=1 -d "$FRESH" -f "$ROOT/supabase/migrations/20261028_ci_access_control.sql" >/dev/null 2>&1
+ psql -X -q -v ON_ERROR_STOP=1 -d "$FRESH" -o /dev/null -f "$ROOT/tests/db/rls_test.sql" && echo "fresh install: RLS TESTS PASSED"
++psql -X -q -v ON_ERROR_STOP=1 -d "$FRESH" -f "$ROOT/supabase/migrations/20261029_signals_client_submission_id.sql" >/dev/null
++psql -X -q -v ON_ERROR_STOP=1 -d "$FRESH" -o /dev/null -f "$ROOT/tests/db/client_id_test.sql" && echo "fresh install: CLIENT ID TESTS PASSED"
+diff --git a/tests/helpers/fake-supabase.js b/tests/helpers/fake-supabase.js
+index 78ec011..2ac332e 100644
+--- a/tests/helpers/fake-supabase.js
++++ b/tests/helpers/fake-supabase.js
+@@ -6,7 +6,13 @@
+  */
+ const crypto = require("crypto");
+ 
+-function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = null, maintenance = false } = {}) {
++// constraints (optional, per table): { unique: [col, …] } extra unique keys enforced on
++// insert/upsert like PostgreSQL (statement fails with 23505, nothing written; the upsert's
++// onConflict column stays the arbiter), { missing: [col, …] } columns that don't exist yet
++// (42703 when written, selected or filtered). hooks.beforeWrite(table, rows) runs before an
++// insert/upsert is applied, hooks.afterWrite(table, rows, state) right after it (lets tests
++// interleave a concurrent writer).
++function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = null, maintenance = false, constraints = {}, hooks = {} } = {}) {
+   const state = {
+     sessions, profiles, maintenance,
+     tables: JSON.parse(JSON.stringify(tables)),
+@@ -95,16 +101,16 @@ function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = nul
+ 
+   function builder(table) {
+     state.tables[table] = state.tables[table] || [];
+-    const q = { table, op: "select", filters: [], payload: null, opts: {}, single: false, maybe: false, limit: null, returning: false, head: false, count: null };
++    const q = { table, op: "select", filters: [], payload: null, opts: {}, single: false, maybe: false, limit: null, returning: false, head: false, count: null, cols: [], filterCols: [] };
+     const api = {
+-      select(cols, o = {}) { if (q.op === "select") q.op = "select"; else q.returning = true; if (o.head) q.head = true; if (o.count) q.count = o.count; return api; },
++      select(cols, o = {}) { if (typeof cols === "string") q.cols.push(...cols.split(",").map(c => c.trim())); if (q.op === "select") q.op = "select"; else q.returning = true; if (o.head) q.head = true; if (o.count) q.count = o.count; return api; },
+       insert(p) { q.op = "insert"; q.payload = p; return api; },
+       upsert(p, o = {}) { q.op = "upsert"; q.payload = p; q.opts = o; return api; },
+       update(p) { q.op = "update"; q.payload = p; return api; },
+       delete(o = {}) { q.op = "delete"; q.count = o.count || null; return api; },
+-      eq(c, v) { q.filters.push(r => r[c] === v); return api; },
++      eq(c, v) { q.filterCols.push(c); q.filters.push(r => r[c] === v); return api; },
+       neq(c, v) { q.filters.push(r => r[c] !== v); return api; },
+-      in(c, vs) { q.filters.push(r => vs.includes(r[c])); return api; },
++      in(c, vs) { q.filterCols.push(c); q.filters.push(r => vs.includes(r[c])); return api; },
+       is(c, v) { q.filters.push(r => (r[c] ?? null) === v); return api; },
+       not(c, op, v) { if (op === "is") q.filters.push(r => (r[c] ?? null) !== v); return api; },
+       gte(c, v) { q.filters.push(r => r[c] == null || r[c] >= v); return api; },
+@@ -119,6 +125,10 @@ function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = nul
+     function match() { return state.tables[table].filter(r => q.filters.every(f => f(r))); }
+     function run() {
+       state.calls.push({ kind: "from", table, op: q.op });
++      const cons = constraints[table] || {};
++      const payloadCols = q.payload ? (Array.isArray(q.payload) ? q.payload : [q.payload]).flatMap(r => Object.keys(r)) : [];
++      const missing = (cons.missing || []).find(c => q.cols.includes(c) || q.filterCols.includes(c) || payloadCols.includes(c));
++      if (missing) return { data: null, error: { code: "42703", message: `column ${table}.${missing} does not exist` } };
+       const rows = state.tables[table];
+       if (q.op === "select") {
+         let out = match();
+@@ -131,7 +141,21 @@ function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = nul
+         return { data: out.map(r => ({ ...r })), error: null, count: out.length };
+       }
+       if (q.op === "insert" || q.op === "upsert") {
++        if (hooks.beforeWrite) hooks.beforeWrite(table, q.payload, state);
+         const list = (Array.isArray(q.payload) ? q.payload : [q.payload]).map(r => ({ id: r.id || crypto.randomUUID(), created_at: new Date().toISOString(), ...r }));
++        // Extra unique keys: any violation fails the whole statement (nothing written).
++        for (const col of cons.unique || []) {
++          if (col === q.opts.onConflict) continue;
++          const seen = new Set(rows.map(x => x[col]).filter(v => v != null));
++          for (const r of list) {
++            const arbiter = q.opts.onConflict && rows.some(x => x[q.opts.onConflict] != null && x[q.opts.onConflict] === r[q.opts.onConflict]);
++            if (arbiter && q.opts.ignoreDuplicates) continue; // DO NOTHING happens first for this row
++            if (r[col] != null && seen.has(r[col])) {
++              return { data: null, error: { code: "23505", message: `duplicate key value violates unique constraint "${table}_${col}_key"`, details: `Key (${col})=(${r[col]}) already exists.` } };
 +            }
-+            return { data: out, error: null };
-+          } };
-+        },
-+      };
-+      return q;
++            if (r[col] != null) seen.add(r[col]);
++          }
++        }
+         const added = [];
+         for (const r of list) {
+           const conflictCol = q.opts.onConflict;
+@@ -143,6 +167,7 @@ function createFake({ sessions = {}, profiles = {}, tables = {}, promptSet = nul
+           rows.push(r); added.push(r);
+         }
+         const data = q.single ? { ...added[0] } : added.map(r => ({ ...r }));
++        if (hooks.afterWrite) hooks.afterWrite(table, q.payload, state);
+         return { data, error: null };
+       }
+       if (q.op === "update") {
+diff --git a/tests/helpers/harness.js b/tests/helpers/harness.js
+index 57c734f..bfc6308 100644
+--- a/tests/helpers/harness.js
++++ b/tests/helpers/harness.js
+@@ -49,7 +49,7 @@ function setEnv(extra = {}) {
+ }
+ 
+ /** Fresh fake DB + fresh module instances for one test. */
+-function setup({ env = {}, withPrompts = true, tables = {}, maintenance = false } = {}) {
++function setup({ env = {}, withPrompts = true, tables = {}, maintenance = false, constraints, hooks } = {}) {
+   setEnv(env);
+   for (const k of Object.keys(require.cache)) if (k.includes("/netlify/")) delete require.cache[k];
+   const sessions = {}, profiles = {};
+@@ -59,7 +59,7 @@ function setup({ env = {}, withPrompts = true, tables = {}, maintenance = false
+   }
+   const hash = (t) => crypto.createHash("sha256").update(t).digest("hex");
+   const fake = createFake({
+-    sessions, profiles, maintenance,
++    sessions, profiles, maintenance, constraints, hooks,
+     promptSet: withPrompts ? allTemplates() : null,
+     tables: {
+       submission_tokens: [
+diff --git a/tests/unit/submit-signal-client-id.test.js b/tests/unit/submit-signal-client-id.test.js
+new file mode 100644
+index 0000000..1b94d50
+--- /dev/null
++++ b/tests/unit/submit-signal-client-id.test.js
+@@ -0,0 +1,140 @@
++/**
++ * submit-signal: optional client_submission_id (Social Submission companion) on the
++ * hardened endpoint. Synthetic data only. The fake enforces the migration's UNIQUE
++ * constraint and can simulate the column being absent (migration not applied yet).
++ */
++const test = require("node:test");
++const assert = require("node:assert");
++const { SUBMIT_TOKEN, setup, stubFetch, event, call } = require("../helpers/harness");
++
++const ID1 = "3f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
++const ID2 = "4a2d3c0f-2b3c-4d4e-9f00-1b2c3d4e5f60";
++const WITH_ID = { constraints: { signals: { unique: ["client_submission_id"] } } };
++const send = (body) => call("submit-signal", event({ submit: SUBMIT_TOKEN, body }));
++const note = (topic, id, extra = {}) => ({ topic, is_manual: true, ...(id ? { client_submission_id: id } : {}), ...extra });
++
++test("repeated id: stored once, retries acknowledged as already received", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  let r = await send([note("Synthetic text-only note", ID1)]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 1);
++  r = await send([note("Synthetic text-only note", ID1)]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 0);
++  assert.strictEqual(r.body.already_received, 1);
++  // Same id even if a retry's content were re-mapped differently: still one row.
++  r = await send([note("Synthetic text-only note (edited)", ID1.toUpperCase())]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 0);
++  assert.strictEqual(fake.state.tables.signals.length, 1);
++  assert.strictEqual(fake.state.tables.signals[0].client_submission_id, ID1);
++  f.restore();
++});
++
++test("submission_key dedup still applies, and both keys interact safely", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  // Existing row without an id (e.g. from the intake sheet) with identical content.
++  let r = await send([note("Same content", null)]);
++  assert.strictEqual(r.body.inserted, 1);
++  // A new id with the same content is deduplicated by submission_key and verified → 200.
++  r = await send([note("Same content", ID1)]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 0);
++  assert.strictEqual(fake.state.tables.signals.length, 1);
++  // Distinct content + distinct id → inserted.
++  r = await send([note("Other content", ID2)]);
++  assert.strictEqual(r.body.inserted, 1);
++  assert.strictEqual(fake.state.tables.signals.length, 2);
++  f.restore();
++});
++
++test("concurrent same id: the competing insert wins, this request re-checks and acknowledges", async () => {
++  let injected = false;
++  const fake = setup({
++    ...WITH_ID,
++    hooks: {
++      beforeWrite(table, rows, state) {
++        if (table !== "signals" || injected) return;
++        injected = true; // another request stores the same id (different content) first
++        state.tables.signals.push({ id: "other", topic: "racing copy", submission_key: "k-other", client_submission_id: ID1, status: "New" });
++      },
 +    },
-+  };
-+  return db;
++  });
++  const f = stubFetch();
++  const r = await send([note("Racing note", ID1), note("Unrelated new row", ID2)]);
++  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
++  assert.strictEqual(r.body.already_received, 1);
++  assert.strictEqual(r.body.inserted, 1, "the other new row in the batch is not lost");
++  assert.strictEqual(fake.state.tables.signals.filter(s => s.client_submission_id === ID1).length, 1);
++  assert.ok(fake.state.tables.signals.some(s => s.client_submission_id === ID2));
++  f.restore();
++});
++
++test("an unrelated uniqueness violation is never acknowledged", async () => {
++  const fake = setup({ constraints: { signals: { unique: ["client_submission_id", "search_tag"] } },
++    tables: { signals: [{ id: "x", topic: "old", submission_key: "k-old", search_tag: "dup-tag", status: "New" }] } });
++  const f = stubFetch();
++  const r = await send([note("New note with clashing tag", ID1, { search_tag: "dup-tag" })]);
++  assert.strictEqual(r.status, 500);
++  assert.notStrictEqual(r.body.success, true);
++  assert.strictEqual(fake.state.tables.signals.length, 1);
++  f.restore();
++});
++
++test("migration not applied: rows with an id fail safely (503), callers without ids still work", async () => {
++  const fake = setup({ constraints: { signals: { missing: ["client_submission_id"] } } });
++  const f = stubFetch();
++  let r = await send([note("Needs the new column", ID1)]);
++  assert.strictEqual(r.status, 503);
++  assert.notStrictEqual(r.body.success, true);
++  assert.strictEqual(fake.state.tables.signals.length, 0, "nothing saved");
++  r = await send([note("Old caller without id", null), { source_url: "https://www.instagram.com/p/SYNTH9/", plant_shown: "Haworthia" }]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 2);
++  assert.ok(fake.state.tables.signals.every(s => !("client_submission_id" in s)), "old callers never touch the column");
++  f.restore();
++});
++
++test("overlapping batches: known ids skipped, new rows kept, duplicate ids within a batch collapsed", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  await send([note("Batch A1", ID1)]);
++  const r = await send([note("Batch A1", ID1), note("Batch B1", ID2), note("Batch B1 again", ID2), note("No id row", null)]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 2, "B1 and the no-id row");
++  assert.strictEqual(r.body.already_received, 1);
++  assert.strictEqual(fake.state.tables.signals.filter(s => s.client_submission_id === ID2).length, 1);
++  assert.strictEqual(fake.state.tables.signals.length, 3);
++  f.restore();
++});
++
++test("skipped rows are verified before acknowledgement", async () => {
++  // ON CONFLICT skips the row because its submission_key exists at insert time; that row is
++  // gone before verification (e.g. deleted concurrently) → never acknowledged as saved.
++  setup({
++    ...WITH_ID,
++    hooks: {
++      beforeWrite(table, rows, state) {
++        if (table !== "signals") return;
++        const first = (Array.isArray(rows) ? rows : [rows])[0];
++        state.tables.signals.push({ id: "ghost", submission_key: first.submission_key, status: "New" });
++      },
++      afterWrite(table, rows, state) {
++        if (table === "signals") state.tables.signals = state.tables.signals.filter(s => s.id !== "ghost");
++      },
++    },
++  });
++  const f = stubFetch();
++  const r = await send([note("Ghost-conflicted note", ID1)]);
++  assert.strictEqual(r.status, 500, JSON.stringify(r.body));
++  assert.notStrictEqual(r.body.success, true);
++  f.restore();
++});
++
++test("invalid ids are ignored (row still stored by content key), never stored", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  const r = await send([note("Bad id note", "not-a-uuid"), note("Injected", "'; drop table signals; --")]);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 2);
++  assert.ok(fake.state.tables.signals.every(s => !s.client_submission_id));
++  f.restore();
++});
+-- 
+2.43.0
+
+
+From a5ad83fcb28f8aa10a9e29d1cae09d8340ec1d7d Mon Sep 17 00:00:00 2001
+From: SB Team <noreply@succulentsbox.com>
+Date: Thu, 29 Oct 2026 13:58:35 +0700
+Subject: [PATCH 2/2] submit-signal client id: refuse ambiguous batches, chunk
+ lookups, atomic migration
+
+Independent review findings: a batch with one id on different content (or one
+content with different ids) is refused (400) instead of dropping a row and
+still acknowledging it; id and verification lookups run in chunks of 50;
+already_received counts every id-carrying row acknowledged without insert;
+migration wrapped in a transaction with conrelid-scoped constraint lookups;
+DB race check now asserts the loser hit the id unique constraint.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ netlify/functions/submit-signal.js            | 50 ++++++++++++++-----
+ .../20261029_signals_client_submission_id.sql | 11 +++-
+ tests/db/run.sh                               |  3 +-
+ tests/unit/submit-signal-client-id.test.js    | 31 +++++++++++-
+ 4 files changed, 78 insertions(+), 17 deletions(-)
+
+diff --git a/netlify/functions/submit-signal.js b/netlify/functions/submit-signal.js
+index 7b7659f..d7f9016 100644
+--- a/netlify/functions/submit-signal.js
++++ b/netlify/functions/submit-signal.js
+@@ -61,6 +61,11 @@ function isClientIdConflict(error) {
+   const text = `${error.message || ""} ${error.details || ""}`;
+   return text.includes("signals_client_submission_id_key") || /\(client_submission_id\)/.test(text);
+ }
++function chunks(list, size = 50) {
++  const out = [];
++  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
++  return out;
 +}
+ // The new column does not exist yet (migration not applied).
+ function isMissingColumn(error) {
+   return !!error && (error.code === "42703" || error.code === "PGRST204") && /client_submission_id/.test(`${error.message || ""} ${error.details || ""}`);
+@@ -124,20 +129,35 @@ exports.handler = async (event) => {
+ 
+     // ── 4. Deduplicate: within the batch, by client id, against old rows by URL, and by key ──
+     // Within the batch: one row per submission_key, and one row per client id.
+-    const seenIds = new Set();
+-    const unique = [...new Map(rows.map(r => [r.submission_key, r])).values()]
+-      .filter(r => !r.client_submission_id || (!seenIds.has(r.client_submission_id) && seenIds.add(r.client_submission_id)));
++    // An id must identify exactly one piece of content, and identical content must not carry
++    // two different ids: such a batch is ambiguous, so it is refused instead of silently
++    // dropping (and still acknowledging) one of the rows. Exact duplicates collapse as before.
++    const keyById = new Map(), idByKey = new Map();
++    for (const r of rows) {
++      if (!r.client_submission_id) continue;
++      const k = keyById.get(r.client_submission_id);
++      if (k !== undefined && k !== r.submission_key) throw new PublicError(400, "The same client_submission_id was sent with different content");
++      keyById.set(r.client_submission_id, r.submission_key);
++      const i = idByKey.get(r.submission_key);
++      if (i !== undefined && i !== r.client_submission_id) throw new PublicError(400, "The same content was sent with different client_submission_id values");
++      idByKey.set(r.submission_key, r.client_submission_id);
++    }
++    const unique = [...new Map(rows.map(r => [r.submission_key, r])).values()];
+     const withIds = unique.filter(r => r.client_submission_id);
+ 
+     // Ids already stored → acknowledged, not inserted again.
+     const storedIds = async (ids) => {
+       if (!ids.length) return new Set();
+-      const { data, error } = await sb.from("signals").select("client_submission_id").in("client_submission_id", ids);
+-      if (error) {
+-        if (isMissingColumn(error)) throw new PublicError(503, "Signal intake is not ready for submission ids yet. Nothing was saved; it is safe to retry.");
+-        throw new PublicError(503, "Could not check for duplicates");
++      const found = new Set();
++      for (const part of chunks(ids)) { // bounded URL length for .in()
++        const { data, error } = await sb.from("signals").select("client_submission_id").in("client_submission_id", part);
++        if (error) {
++          if (isMissingColumn(error)) throw new PublicError(503, "Signal intake is not ready for submission ids yet. Nothing was saved; it is safe to retry.");
++          throw new PublicError(503, "Could not check for duplicates");
++        }
++        (data || []).forEach(r => found.add(r.client_submission_id));
+       }
+-      return new Set((data || []).map(r => r.client_submission_id));
++      return found;
+     };
+     let alreadyReceived = await storedIds(withIds.map(r => r.client_submission_id));
+ 
+@@ -183,9 +203,14 @@ exports.handler = async (event) => {
+     const insertedKeys = new Set(inserted.map(r => r.submission_key));
+     const notInserted = candidates.filter(r => !insertedKeys.has(r.submission_key)).map(r => r.submission_key);
+     if (notInserted.length) {
+-      const { data: found, error } = await sb.from("signals").select("submission_key").in("submission_key", notInserted);
+-      const have = new Set((found || []).map(r => r.submission_key));
+-      if (error || notInserted.some(k => !have.has(k))) {
++      const have = new Set();
++      let verifyError = null;
++      for (const part of chunks(notInserted)) { // bounded URL length for .in()
++        const { data: found, error } = await sb.from("signals").select("submission_key").in("submission_key", part);
++        if (error) { verifyError = error; break; }
++        (found || []).forEach(r => have.add(r.submission_key));
++      }
++      if (verifyError || notInserted.some(k => !have.has(k))) {
+         console.error("submit-signal: skipped rows could not be verified");
+         throw new PublicError(500, "Failed to confirm saved signals. It is safe to retry.");
+       }
+@@ -210,7 +235,8 @@ exports.handler = async (event) => {
+       success: true,
+       inserted: inserted.length,
+       skipped,
+-      already_received: withIds.filter(r => alreadyReceived.has(r.client_submission_id)).length,
++      // rows that carried an id and were acknowledged without a new insert (all verified)
++      already_received: withIds.filter(r => !insertedKeys.has(r.submission_key)).length,
+       auto_clustering: autoClustered,
+       message: inserted.length
+         ? `${inserted.length} signal(s) added, ${skipped} duplicate(s) skipped`
+diff --git a/supabase/migrations/20261029_signals_client_submission_id.sql b/supabase/migrations/20261029_signals_client_submission_id.sql
+index ba2859f..7178295 100644
+--- a/supabase/migrations/20261029_signals_client_submission_id.sql
++++ b/supabase/migrations/20261029_signals_client_submission_id.sql
+@@ -3,15 +3,20 @@
+ -- submit-signal change that sends rows with client_submission_id.
+ -- Additive and idempotent (safe to run twice). Existing rows and callers are unaffected:
+ -- the column is nullable and a UNIQUE constraint allows any number of NULLs.
++-- One transaction: either everything below exists afterwards, or nothing changed.
++-- (Small table: the UNIQUE index build and CHECK scan briefly lock signals. For a very large
++-- table, build the index CONCURRENTLY first and add the CHECK as NOT VALID + VALIDATE.)
++begin;
 +
-+function loadHandler(db) {
-+  const path = require.resolve("../netlify/functions/submit-signal.js");
-+  delete require.cache[path];
-+  const orig = Module._load;
-+  Module._load = function (req, ...a) {
-+    if (req === "@supabase/supabase-js") return { createClient: () => db.client };
-+    return orig.call(this, req, ...a);
-+  };
-+  try { return require(path).handler; } finally { Module._load = orig; }
-+}
+ alter table public.signals add column if not exists client_submission_id text;
+ 
+ do $$
+ begin
+-  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_key') then
++  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_key' and conrelid = 'public.signals'::regclass) then
+     alter table public.signals
+       add constraint signals_client_submission_id_key unique (client_submission_id);
+   end if;
+-  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_format') then
++  if not exists (select 1 from pg_constraint where conname = 'signals_client_submission_id_format' and conrelid = 'public.signals'::regclass) then
+     alter table public.signals
+       add constraint signals_client_submission_id_format
+       check (client_submission_id is null or client_submission_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
+@@ -39,3 +44,5 @@ create trigger signals_client_id_guard
+ 
+ comment on column public.signals.client_submission_id is
+   'Idempotency key sent by integrations that retry (Social Submission submission id). Set only by submit-signal (service role).';
 +
-+process.env.SUPABASE_URL = "http://fake"; process.env.SUPABASE_SERVICE_ROLE_KEY = "fake";
-+delete process.env.CLAUDE_API_KEY; // no auto-cluster calls in tests
-+const ev = (body) => ({ httpMethod: "POST", headers: { "x-submission-token": "x" }, body: JSON.stringify(body) });
-+const ID = "3f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-+const ID2 = "4f1c2b9e-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
-+const sig = (over = {}) => ({ topic: "text only signal", is_manual: true, client_submission_id: ID, ...over });
-+const body = (r) => JSON.parse(r.body);
++commit;
+diff --git a/tests/db/run.sh b/tests/db/run.sh
+index df5a9b0..8bff158 100755
+--- a/tests/db/run.sh
++++ b/tests/db/run.sh
+@@ -25,7 +25,8 @@ $Q -o /dev/null -f "$ROOT/tests/db/client_id_test.sql"
+ # two concurrent inserts of the same id with different content keys -> exactly one row
+ CID="7d5f6f32-5e6f-4071-8233-4e5f60718293"
+ psql -X -q -d "$DB" -c "begin; insert into signals (topic, status, submission_key, client_submission_id) values ('race a','New','k-race-a','$CID') on conflict (submission_key) do nothing; select pg_sleep(1); commit;" >/dev/null &
+-sleep 0.2; psql -X -q -d "$DB" -c "insert into signals (topic, status, submission_key, client_submission_id) values ('race b','New','k-race-b','$CID') on conflict (submission_key) do nothing" >/dev/null 2>&1 || true; wait
++sleep 0.2; LOSER=$(psql -X -q -d "$DB" -c "insert into signals (topic, status, submission_key, client_submission_id) values ('race b','New','k-race-b','$CID') on conflict (submission_key) do nothing" 2>&1 >/dev/null || true); wait
++case "$LOSER" in *signals_client_submission_id_key*) echo "concurrent loser got the id unique violation: ok";; *) echo "FAIL concurrent loser: $LOSER"; exit 1;; esac
+ $Q -Atc "select case when count(*) = 1 then 'concurrent client id insert: ok' else 'FAIL concurrent client id duplicates' end from signals where client_submission_id = '$CID'"
+ # R5: two concurrent sessions inserting the same snapshot key -> one row
+ VID=$($Q -Atc "insert into published_videos (video_url) values ('https://example.test/v/concurrent') returning id")
+diff --git a/tests/unit/submit-signal-client-id.test.js b/tests/unit/submit-signal-client-id.test.js
+index 1b94d50..72295a9 100644
+--- a/tests/unit/submit-signal-client-id.test.js
++++ b/tests/unit/submit-signal-client-id.test.js
+@@ -95,13 +95,14 @@ test("migration not applied: rows with an id fail safely (503), callers without
+   f.restore();
+ });
+ 
+-test("overlapping batches: known ids skipped, new rows kept, duplicate ids within a batch collapsed", async () => {
++test("overlapping batches: known ids skipped, new rows kept, exact duplicates within a batch collapsed", async () => {
+   const fake = setup(WITH_ID); const f = stubFetch();
+   await send([note("Batch A1", ID1)]);
+-  const r = await send([note("Batch A1", ID1), note("Batch B1", ID2), note("Batch B1 again", ID2), note("No id row", null)]);
++  const r = await send([note("Batch A1", ID1), note("Batch B1", ID2), note("Batch B1", ID2), note("No id row", null)]);
+   assert.strictEqual(r.status, 200);
+   assert.strictEqual(r.body.inserted, 2, "B1 and the no-id row");
+   assert.strictEqual(r.body.already_received, 1);
++  assert.strictEqual(r.body.skipped, 2, "A1 (already stored) and the exact B1 duplicate");
+   assert.strictEqual(fake.state.tables.signals.filter(s => s.client_submission_id === ID2).length, 1);
+   assert.strictEqual(fake.state.tables.signals.length, 3);
+   f.restore();
+@@ -138,3 +139,29 @@ test("invalid ids are ignored (row still stored by content key), never stored",
+   assert.ok(fake.state.tables.signals.every(s => !s.client_submission_id));
+   f.restore();
+ });
 +
-+test("first delivery inserts; a retry with the same id is acknowledged without a new row", async () => {
-+  const db = makeDb(); const h = loadHandler(db);
-+  const r1 = await h(ev([sig()]));
-+  assert.equal(r1.statusCode, 200); assert.equal(body(r1).inserted, 1);
-+  const r2 = await h(ev([sig()]));
-+  assert.equal(r2.statusCode, 200); assert.equal(body(r2).inserted, 0); assert.equal(body(r2).already_received, 1);
-+  assert.equal(db.rows.length, 1);
++test("ambiguous batches are refused, never partly acknowledged", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  let r = await send([note("first", ID1), note("second, different", ID1)]);
++  assert.strictEqual(r.status, 400, "same id, different content");
++  r = await send([note("same content", ID1), note("same content", ID2)]);
++  assert.strictEqual(r.status, 400, "same content, different ids");
++  assert.strictEqual(fake.state.tables.signals.length, 0, "nothing saved");
++  f.restore();
 +});
 +
-+test("concurrent same-id requests produce one row and both are acknowledged", async () => {
-+  const db = makeDb(); const h = loadHandler(db);
-+  const rs = await Promise.all([h(ev([sig()])), h(ev([sig()])), h(ev([sig()]))]);
-+  assert.ok(rs.every((r) => r.statusCode === 200));
-+  assert.equal(db.rows.length, 1);
-+});
-+
-+test("an unrelated unique violation (23505) is NOT acknowledged as delivered", async () => {
-+  const db = makeDb({ failNextWith: "23505" }); const h = loadHandler(db);
-+  const r = await h(ev([sig()]));
-+  assert.equal(r.statusCode, 500);
-+  assert.equal(body(r).success, undefined);
-+  assert.equal(db.rows.length, 0);
-+});
-+
-+test("missing migration fails the request (no false success)", async () => {
-+  const db = makeDb({ migrated: false }); const h = loadHandler(db);
-+  const r = await h(ev([sig()]));
-+  assert.equal(r.statusCode, 500);
-+});
-+
-+test("callers without an id are unchanged, also before the migration", async () => {
-+  const db = makeDb({ migrated: false }); const h = loadHandler(db);
-+  const r = await h(ev([{ topic: "scraper row", source_url: "https://x.example/1" }]));
-+  assert.equal(r.statusCode, 200); assert.equal(body(r).inserted, 1);
-+  assert.ok(!("client_submission_id" in db.rows[0]) || db.rows[0].client_submission_id === null);
-+  const again = await h(ev([{ topic: "scraper row", source_url: "https://x.example/1" }]));
-+  assert.equal(body(again).inserted, 0, "source_url dedupe still applies");
-+});
-+
-+test("overlapping batches: known ids acknowledged, new rows (with and without ids) inserted", async () => {
-+  const db = makeDb(); const h = loadHandler(db);
-+  await h(ev([sig()]));
-+  const r = await h(ev([sig(), sig({ client_submission_id: ID2, topic: "second" }), { topic: "no id row" }, sig({ client_submission_id: "not-a-uuid", topic: "bad id" })]));
-+  const b = body(r);
-+  assert.equal(r.statusCode, 200);
-+  assert.equal(b.inserted, 3);              // ID2 + "no id row" + "bad id" (treated as no id)
-+  assert.equal(b.already_received, 1);
-+  assert.equal(db.rows.length, 4);
-+});
-+
-+test("an id that is neither inserted nor found is not acknowledged", async () => {
-+  const db = makeDb(); const h = loadHandler(db);
-+  // Simulate an upsert that silently skips a row that does not exist (should never happen).
-+  const orig = db.client.from;
-+  db.client.from = () => { const q = orig(); const up = q.upsert; q.upsert = (rows, o) => ({ select: async () => ({ data: [], error: null }) }); return q; };
-+  const r = await h(ev([sig()]));
-+  assert.equal(r.statusCode, 500);
++test("large re-sends are checked in chunks (no oversized .in() query)", async () => {
++  const fake = setup(WITH_ID); const f = stubFetch();
++  const crypto = require("crypto");
++  const batch = Array.from({ length: 180 }, (_, i) => note("bulk note " + i, crypto.randomUUID()));
++  let r = await send(batch);
++  assert.strictEqual(r.body.inserted, 180);
++  const before = fake.state.calls.length;
++  r = await send(batch);
++  assert.strictEqual(r.status, 200);
++  assert.strictEqual(r.body.inserted, 0);
++  assert.strictEqual(r.body.already_received, 180);
++  const idQueries = fake.state.calls.slice(before).filter(c => c.kind === "from" && c.table === "signals" && c.op === "select").length;
++  assert.ok(idQueries >= 4, "180 ids looked up in chunks of 50");
++  f.restore();
 +});
 -- 
 2.43.0

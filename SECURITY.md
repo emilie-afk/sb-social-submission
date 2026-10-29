@@ -142,10 +142,13 @@ progress / id conflict.
 **What is and is not guaranteed**
 - Sheet: one row per submission id under Google's documented processing limit; beyond it, a
   rare extra row is detected and flagged for manual deletion, not prevented.
-- Dashboard: **not exactly-once from this app alone.** Content Intelligence today
-  deduplicates only by `source_url`. Until the companion change is live, a text-only
-  submission retried by the user after an `uncertain` outcome can create a second signal.
-  With the change live, retries are deduplicated by `client_submission_id` in the database.
+- Dashboard: **not exactly-once from this app alone.** The pre-hardening Content
+  Intelligence endpoint deduplicates only by source URL. The hardened endpoint also
+  deduplicates identical content through `submission_key`. With the companion migration and
+  endpoint deployed and verified, `client_submission_id` provides independent retry
+  deduplication. Which version is deployed must be verified on the live site — a branch
+  merge does not show it. Keep `DASHBOARD_IDEMPOTENT` unset until the companion migration and
+  endpoint are live and verified.
 - If the Blobs store itself were lost, the sheet is still protected by the column-H lookup,
   but dashboard state is unknown and a retry would re-send the signal (deduplicated only
   with the companion change).
@@ -223,8 +226,11 @@ regression tests listed above.
   prevented (§5). The reconciler and every retry look rows up by id first.
 - **Verifying window**: after an unknown append outcome the entry can take up to ~10 minutes
   (+ up to 15 min for the reconciler) to be confirmed in the sheet; the page says so.
-- **The sheet is public** by decision. Hiding its id from responses/logs does not stop anyone
-  who already has the link from reading it.
+- **Sheet access.** A read-only check on 29 Oct 2026 found no link sharing on the intake
+  sheet: named accounts only (7 editors, 1 viewer) plus the service account. Keeping its id out
+  of responses and logs reduces discovery; access itself is governed by the sheet's sharing,
+  which should be re-verified rather than assumed. Named editors can also read Script
+  Properties of a script bound to the sheet (see ROLLOUT, legacy Apps Script).
 - **One shared password**: no per-person identity; "Submitted by" is self-reported.
 - **Global login limit** (300/h): a determined attacker can still slow everyone's *new*
   sign-ins; existing sessions keep working.

@@ -11,8 +11,11 @@ into files or chats.
    shorter passwords). Note the total size of Functions-scoped variables (AWS limit 4 KB;
    the service-account JSON is most of it).
 2. Netlify → Functions: note the function timeout (default 10 s) and Node version (≥ 20).
-3. Google Sheet → Share: confirm the service account has Editor on **this intake sheet only**
-   and no other files; remove extra shares if any (sheet itself stays public — no change).
+3. Google Sheet → Share: verify current access and keep the intended sharing (no change is
+   part of this rollout). A read-only check on 29 Oct 2026 found **no link sharing** on the
+   intake sheet: access is by named accounts only (7 editors including the owner, 1 viewer)
+   plus the `sb-intake` service account as Editor. Confirm the service account has Editor on
+   **this intake sheet only** and no other files.
 4. Content Intelligence: confirm the token in `SUBMIT_TOKEN` is a `submit_signal` token
    (its own rollout rotates it — step 6 there).
 
@@ -27,29 +30,31 @@ into files or chats.
 ## 2. Content Intelligence companion change (recommended before step 3; order matters)
 
 Deliverable: `content-intelligence-submit-signal-idempotency.patch` (identical copy in
-`docs/companion/`). It contains the `submit-signal.js` change, its tests
-(`npm test` → 7 pass) and the migration as a separate file
-`supabase/migrations/20261028_signals_client_submission_id.sql`.
+`docs/companion/`): two commits on the **hardened** Content Intelligence branch
+`security-hardening` at `948047d` (also delivered as a bundle). It keeps that branch's token
+auth, validation, `submission_key` dedup, error helpers and clustering budget, and adds:
+- `client_submission_id` handling in `submit-signal` (stored ids acknowledged without a new
+  row; concurrent same-id inserts re-checked; skipped rows verified before acknowledging;
+  ambiguous batches refused; missing migration → 503, never a false success);
+- a **separate** migration `supabase/migrations/20261029_signals_client_submission_id.sql`
+  (nullable column, UNIQUE, UUID format check, trigger so browser users can't set it; one
+  transaction; safe to run twice);
+- tests: `npm test` (81) and `tests/db/run.sh` on PostgreSQL (migration twice, conflict
+  semantics, unrelated violations, two-session race, browser users denied, fresh install).
 
-**Base — blocker, not a rollout step:** this patch is built and tested on Content
-Intelligence `main` (`ddb3428`) only. It does **not** apply to the hardened branch
-(`948047d`), whose `submit-signal` already has scoped token auth, input mapping,
-`submission_key` deduplication, shared error helpers and bounded clustering. The companion
-must be re-integrated and tested on `948047d` itself before anyone pushes or deploys it —
-nobody should hand-port it. Until that integrated commit exists, do not apply this patch.
-
-1. Supabase SQL editor: run the migration file (nullable `signals.client_submission_id` +
-   a full UNIQUE constraint; additive; safe to run twice). **Run it before deploying the code.**
-2. Deploy the patched `submit-signal` with the Content Intelligence rollout.
-3. Verify: one Social Submission test entry → one signal; submit the same payload again with
-   the same id (e.g. tap Retry) → `already_received: 1`, no second signal.
-4. Then set `DASHBOARD_IDEMPOTENT=true` on Social Submission (lets the reconciler repeat
+Order (part of the Content Intelligence rollout, `docs/SECURITY-ROLLOUT.md` step 5.6):
+1. Supabase SQL editor: run the migration **after** `20261028_ci_access_control.sql` and
+   **before** deploying the new `submit-signal`.
+2. Deploy Content Intelligence (its own review/approval; this does not clear its separate
+   review findings).
+3. Verify: one Social Submission test entry → one signal with `client_submission_id` set;
+   Retry with the same id → `already_received: 1`, no second signal.
+4. Only then set `DASHBOARD_IDEMPOTENT=true` on Social Submission (lets the reconciler repeat
    `uncertain` deliveries) and redeploy.
 
-Without this change Social Submission still works; only retries after an uncertain
-dashboard outcome may create a duplicate text-only signal. If the code is deployed without
-the migration, submissions *with* an id fail with 500 (reported as not delivered, never as
-success) and callers without an id are unaffected.
+Without this change Social Submission still works: the hardened endpoint already skips an
+identical retry by its content key (`submission_key`); the id adds protection that doesn't
+depend on content matching exactly. Leave `DASHBOARD_IDEMPOTENT` unset until step 3 passes.
 
 ## 3. Deploy (one atomic Netlify deploy)
 
@@ -144,19 +149,24 @@ Why that matters:
   - `getDailyBoard`, `getRecentTrackerEntries`, `getSummary`: return sheet data.
 - **Framing allowed.** `XFrameOptionsMode.ALLOWALL` lets any site embed the page.
 - **Who can read the key.** Script Properties are not sent to visitors, but anyone who can edit
-  the script can read them. If the script is bound to the public sheet and the sheet's link
-  access is *Editor*, everyone with the link can read the key.
+  the script can read them. If the script is bound to the intake sheet, every **named editor**
+  of that sheet can read the key (29 Oct 2026 check: no link sharing; 7 named editors).
+- **Sheet access ≠ web-app access.** A restricted sheet does not restrict the web app: a
+  deployment with *Who has access: Anyone* is reachable by anyone with its URL regardless of
+  the sheet's sharing. Its current status must be checked separately (step 1).
 
 Steps (each needs the owner's approval; retiring an Apps Script deployment is the owner's call):
 1. Intake sheet → Extensions → Apps Script → **Deploy → Manage deployments**. If a web-app
    deployment is active and this Netlify site has replaced the form, **archive** it.
-2. Intake sheet → **Share**: record whether link access is *Viewer* or *Editor* (no change to
-   the sheet staying public).
+2. Intake sheet → **Share**: re-verify current access (29 Oct 2026: no link sharing; named
+   accounts only) and keep the intended sharing; list who can edit, since editors can read
+   the script's Script Properties.
 3. **Key:**
    - script no longer used → delete the `CLAUDE_API_KEY` Script Property;
    - still used → give it its own key, separate from this site's `CLAUDE_API_KEY`;
-   - if the web app was public or the sheet was editable by link → **rotate** that key in the
-     Anthropic console and check its usage for unexpected calls.
+   - if the web app was reachable by anyone, or anyone outside the team could edit the
+     sheet/script → **rotate** that key in the Anthropic console and check its usage for
+     unexpected calls.
 4. If the script must stay deployed: restrict access to the Google Workspace domain, rename server
    functions with a trailing `_` (private) except those the page needs, and add a check
    before any Claude call or sheet write.
