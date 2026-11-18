@@ -1,0 +1,7 @@
+node_modules/
+.env
+.env.*
+.netlify/
+.build/
+*.private.json
+test-results/
